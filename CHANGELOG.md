@@ -4,6 +4,16 @@ Changes to the Ragtime fork with bundled Data2G for macOS. Dates use
 America/New_York. Entries summarize this fork's packaged releases; the
 upstream projects retain their own histories.
 
+## 0.4.0 beta 5 — 2026-11-24
+
+- Update built-in Data2G to `95c94b1`, including carrier-aware CPM noise
+  floors/SNR estimates and receive-preview/lock-reporting corrections.
+- Explicitly require the HF modem profile and 8 kHz audio contract. Upstream's
+  new FM profile remains separate; the HF protocol stays at version 15.
+- Verify Ragtime `00ac994` and sotto `e707134` remain current upstream.
+- Preserve the modem monitor, RX/TX Ear tap, CAT controls, voice, logs,
+  persistent Clear behavior and the bundled app's independent identity.
+
 ## 0.4.0 beta 4 — 2026-11-23
 
 - Show each component's revision code alongside its version in About.

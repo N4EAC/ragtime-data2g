@@ -5,6 +5,12 @@ if(NOT EXISTS "${RAGTIME_DATA2G_SOURCE_DIR}/native/CMakeLists.txt")
     message(FATAL_ERROR "Point RAGTIME_DATA2G_SOURCE_DIR at a Data2G checkout (tested with v0.5.3).")
 endif()
 
+# Ragtime's bandwidth controls and audio taps use the HF modem profile.
+if(DEFINED DATA2G_PROFILE AND NOT DATA2G_PROFILE STREQUAL "hf")
+    message(FATAL_ERROR "The Ragtime bundled modem requires DATA2G_PROFILE=hf.")
+endif()
+set(DATA2G_PROFILE "hf" CACHE STRING "Radio service profile (hf/fm)")
+
 # Find the imported targets in the parent scope as Ragtime also links them.
 find_package(Qt6 6.2 REQUIRED COMPONENTS Core Network WebSockets)
 

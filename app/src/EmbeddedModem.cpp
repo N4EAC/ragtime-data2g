@@ -22,6 +22,9 @@
 #include "ragtime/audio/EarAudio.h"
 #include "ragtime/audio/CoreAudioVoice.h"
 
+static_assert(data2g::config::PROFILE == "hf" && data2g::config::FS == 8000,
+              "Ragtime's embedded audio and bandwidth controls require the Data2G HF profile");
+
 namespace
 {
 std::optional<std::string> deviceIndex(const std::string& name, bool input)

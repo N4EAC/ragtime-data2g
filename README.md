@@ -12,7 +12,7 @@ and on which band, each of your friends gets through, so it can tell you
 who is likely around now, and the best time of day to check in to the
 D2G net to find them.
 
-Status: 0.4.0 beta 4. Ragtime connects to data2g-host,
+Status: 0.4.0 beta 5. Ragtime connects to data2g-host,
 chats on the D2G broadcast group. Current features include:
 - "Globus," which plots your friend's maidenhead coordinates
    on a globe,
@@ -97,11 +97,12 @@ On Fedora 44:
 ### macOS
 
 The integrated modem uses Data2G v0.5.3 plus upstream receiver and session fixes at commit
-`9894b6366cfe7f5bd4d30555c3327a808840e248`. Use a separate checkout for
-this build. [Data2G v0.5.3](https://github.com/arodland/Data2G/releases/tag/v0.5.3)
+`95c94b1c1b85edbdff6d1e6828d3087e67ccfeef`. Use a separate checkout for
+this build. The bundled modem uses the HF profile; the experimental FM
+profile is not enabled. [Data2G v0.5.3](https://github.com/arodland/Data2G/releases/tag/v0.5.3)
 
     git clone https://github.com/arodland/Data2G.git ../Data2G-ragtime
-    git -C ../Data2G-ragtime checkout 9894b6366cfe7f5bd4d30555c3327a808840e248
+    git -C ../Data2G-ragtime checkout 95c94b1c1b85edbdff6d1e6828d3087e67ccfeef
 
 Install the build dependencies with Homebrew:
 
