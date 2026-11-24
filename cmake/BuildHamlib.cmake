@@ -1,14 +1,17 @@
 # Fetches Hamlib with git and builds it as a static library
-# (-DRAGTIME_BUILD_HAMLIB=ON), for macOS and Windows packages without a
-# system Hamlib dependency. Defines ragtime::hamlib, which the rig library
-# links, and hamlib_build, which it waits for.
+# (-DRAGTIME_BUILD_HAMLIB=ON), for the AppImage, macOS and Windows
+# packages, without a system Hamlib dependency. 4.7.2, the Hamlib
+# Data2G's own packages carry: 4.6 brought the SmartSDR Slice models, for
+# a FlexRadio 6000 on its own port (4992) over the network. Defines
+# ragtime::hamlib, which the rig library links, and hamlib_build, which it
+# waits for.
 #
 # Hamlib builds with autotools, so this needs autoconf, automake and
 # libtool besides the cross compiler. Point RAGTIME_HAMLIB_SOURCE at a
 # Hamlib checkout to build that instead of cloning one; the build happens
 # in a copy, so the checkout stays clean.
 
-set(RAGTIME_HAMLIB_VERSION 4.5.5)
+set(RAGTIME_HAMLIB_VERSION 4.7.2)
 set(RAGTIME_HAMLIB_SOURCE "" CACHE PATH "A Hamlib source tree to build instead of cloning ${RAGTIME_HAMLIB_VERSION}.")
 
 include(ExternalProject)
@@ -68,5 +71,6 @@ set_target_properties(ragtime::hamlib PROPERTIES
     IMPORTED_LOCATION ${prefix}/lib/libhamlib.a
     INTERFACE_INCLUDE_DIRECTORIES ${prefix}/include)
 if(WIN32)
-    set_property(TARGET ragtime::hamlib PROPERTY INTERFACE_LINK_LIBRARIES ws2_32)
+    # Sockets, the adapter list (iphlpapi, since 4.6) and timers (winmm).
+    set_property(TARGET ragtime::hamlib PROPERTY INTERFACE_LINK_LIBRARIES ws2_32 iphlpapi winmm)
 endif()

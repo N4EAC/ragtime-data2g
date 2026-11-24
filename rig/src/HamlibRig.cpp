@@ -149,6 +149,25 @@ int addModel(const struct rig_caps* caps, rig_ptr_t data)
     return 1; // go on
 }
 
+// Hamlib's SmartSDR models, slices A to H (4.6 on; spelled out, as
+// older headers lack them).
+constexpr int SMARTSDR_A = 23005;
+constexpr int SMARTSDR_H = 23012;
+// Hamlib's FlexRadio 6xxx, the Kenwood-like SmartSDR CAT protocol.
+constexpr int FLEX_6XXX = 2036;
+
+bool endsWith(const std::string& text, const std::string& end)
+{
+    return text.size() >= end.size() && text.compare(text.size() - end.size(), end.size(), end) == 0;
+}
+
+// The advice for this rig, set off for the end of a problem.
+std::string adviceAfter(const radio::RigSettings& settings)
+{
+    std::string advice = flexAdvice(settings.model, settings.port);
+    return advice.empty() ? advice : ". " + advice;
+}
+
 // Opens the rig, or says why it couldn't.
 RIG* openRig(const radio::RigSettings& settings, std::string& why)
 {
@@ -192,11 +211,15 @@ RIG* openRig(const radio::RigSettings& settings, std::string& why)
             return nullptr;
         }
     }
+    // Hamlib's own poll thread off (on by default since 4.6): Ragtime's
+    // thread asks the rig everything, one command at a time.
+    auto poll = rig_token_lookup(rig, "poll_interval");
+    if (poll != RIG_CONF_END) rig_set_conf(rig, poll, "0");
     int r = rig_open(rig);
     if (r != RIG_OK)
     {
         why = "Couldn't open the " + name + (settings.port.empty() ? std::string() : " on " + settings.port) + ": "
-              + errorText(r);
+              + errorText(r) + adviceAfter(settings);
         rig_cleanup(rig);
         return nullptr;
     }
@@ -255,6 +278,31 @@ void closeRig(RIG*& rig)
 bool available()
 {
     return true;
+}
+
+std::string flexAdvice(int model, const std::string& port)
+{
+    if (model >= SMARTSDR_A && model <= SMARTSDR_H)
+    {
+        char slice = (char)('A' + (model - SMARTSDR_A));
+        return std::string("SmartSDR Slice ") + slice + " reads slice " + slice +
+               ": is it open on the radio, and is the address the radio's own (not 127.0.0.1; "
+               "Hamlib always uses port 4992)?";
+    }
+    if (model != FLEX_6XXX || !endsWith(port, ":4992")) return "";
+    bool slices = false;
+    {
+        hamlibReady();
+        std::lock_guard<std::mutex> lock(hamlibMutex());
+        slices = rig_get_caps((rig_model_t)SMARTSDR_A) != nullptr;
+    }
+    std::string advice = "4992 is the radio's own SmartSDR port, and Hamlib's FlexRadio 6xxx doesn't speak "
+                         "it (it speaks SmartSDR CAT): ";
+    if (slices)
+        return advice + "for 4992 pick FlexRadio SmartSDR Slice A (or your slice's letter), "
+                        "or keep 6xxx and give it a SmartSDR CAT port";
+    return advice + "keep 6xxx and give it a SmartSDR CAT port (" + hamlibVersion() +
+           " has no SmartSDR Slice models; they came in Hamlib 4.6)";
 }
 
 std::string hamlibVersion()
@@ -831,14 +879,17 @@ void HamlibRig::run()
                     shared->status.version++;
                 }
             }
-            else if (++readFailures >= 3)
-            {
-                failed("The rig stopped answering: " + errorText(r == RIG_OK ? -RIG_EPROTO : r));
-                continue;
-            }
             else
             {
-                shared->update([&](Status& s) { s.problem = "Reading the dial failed: " + errorText(r); });
+                // Answered with 0 Hz: SmartSDR's, for a slice that isn't open.
+                std::string what = (r == RIG_OK ? std::string("the rig gave no frequency") : errorText(r)) +
+                                   adviceAfter(settings);
+                if (++readFailures >= 3)
+                {
+                    failed("The rig stopped answering: " + what);
+                    continue;
+                }
+                shared->update([&](Status& s) { s.problem = "Reading the dial failed: " + what; });
             }
         }
         else if (!tx && readsStrength && now >= nextStrength && now >= unkeyedMs + radio::NoiseFloor::SETTLE_MS)

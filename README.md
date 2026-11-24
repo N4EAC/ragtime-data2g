@@ -134,6 +134,15 @@ folder in your home folder or its `src`, `git`, `code`, `projects`,
 `Projects`, `repos` or `dev` folder. Otherwise load the file with **Load
 thresholds...** in the gearshift. See [docs/GEARBOX.md](docs/GEARBOX.md).
 
+**A FlexRadio 6000 over the network.** In Settings > Rig, pick Hamlib,
+maker FlexRadio, model SmartSDR Slice A (or the letter of the slice you
+work on), and give the radio's own address; Hamlib adds SmartSDR's
+port, 4992. The model 6xxx speaks SmartSDR CAT instead, so it goes with
+a port SmartSDR CAT opens (a virtual COM port, or its TCP port), never
+4992. The SmartSDR models came in Hamlib 4.6: the downloads carry
+Hamlib 4.7.2, but a build against Ubuntu 24.04's Hamlib (4.5.5) has
+none.
+
 ## Building
 
 On Ubuntu 24.04:
@@ -277,7 +286,8 @@ wants `librsvg2-bin` and `imagemagick`.
 
 The Windows build cross-compiles on Ubuntu 24.04 with
 `g++-mingw-w64-x86-64-posix` and builds its own static wxWidgets and
-Hamlib (which needs `autoconf automake libtool`); with
+Hamlib (which needs `autoconf automake libtool`, as the AppImage does
+for its Hamlib); with
 Wine installed, `ctest --test-dir build-win` runs the unit tests as
 Windows programs.
 
