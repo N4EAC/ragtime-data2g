@@ -11,6 +11,7 @@ upstream projects retain their own histories.
 - Explicitly require the HF modem profile and 8 kHz audio contract. Upstream's
   new FM profile remains separate; the HF protocol stays at version 15.
 - Verify Ragtime `00ac994` and sotto `e707134` remain current upstream.
+- Remove absolute Homebrew search paths from packaged transitive libraries.
 - Preserve the modem monitor, RX/TX Ear tap, CAT controls, voice, logs,
   persistent Clear behavior and the bundled app's independent identity.
 

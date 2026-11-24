@@ -33,6 +33,7 @@ done
 # macdeployqt leaves some transitive Homebrew libraries with absolute IDs.
 python3 - "$app" <<'PY_DEPENDENCIES'
 from pathlib import Path
+import re
 import subprocess
 import sys
 app = Path(sys.argv[1]).resolve()
@@ -68,6 +69,10 @@ for candidate in app.rglob("*"):
             raise RuntimeError(f"Unbundled dependency in {binary.name}: {dependency}")
         replacement = "@rpath/" + str(target.relative_to(frameworks))
         subprocess.run(["install_name_tool", "-change", dependency, replacement, str(binary)], check=True)
+    loads = subprocess.check_output(["otool", "-l", str(binary)], text=True)
+    for path in re.findall(r"\bpath (.*?) \(offset \d+\)", loads):
+        if path.startswith("/"):
+            subprocess.run(["install_name_tool", "-delete_rpath", path, str(binary)], check=True)
 PY_DEPENDENCIES
 
 codesign --force --deep --sign - "$app"
