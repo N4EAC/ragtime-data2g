@@ -39,6 +39,11 @@ std::vector<BackendParam> backendParams(int)
     return {};
 }
 
+std::string flexAdvice(int, const std::string&)
+{
+    return "";
+}
+
 struct HamlibRig::Shared
 {
     Status status;

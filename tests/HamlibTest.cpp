@@ -4,12 +4,27 @@
 // the transmit meters while transmitting and the S-meter between bursts,
 // the receive filter while the Ear watches it, tuning to a frequency
 // picked on the dial, and saying why when a rig
-// can't be opened.
+// can't be opened. Then a FlexRadio: the advice for one set up the way
+// that can't work, and (with Hamlib 4.6 or later, on POSIX) its SmartSDR
+// Slice model reading and tuning a pretend radio on SmartSDR's own TCP
+// port, as Ragtime reads a 6000-series radio over the network.
+#include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include "Check.h"
 #include "ragtime/rig/HamlibRig.h"
@@ -262,6 +277,188 @@ void cantOpen()
     r.stop();
 }
 
+void flexAdvice()
+{
+    // The Kenwood-like 6xxx on the radio's own port: pick a slice instead.
+    std::string advice = rig::flexAdvice(2036, "192.168.1.50:4992");
+    CHECK(advice.find("4992 is the radio's own SmartSDR port") != std::string::npos);
+    CHECK(advice.find("SmartSDR CAT port") != std::string::npos);
+    bool slices = rig::model(23005).has_value();
+    CHECK_EQ(advice.find("SmartSDR Slice A") != std::string::npos, slices);
+    CHECK_EQ(advice.find("came in Hamlib 4.6") != std::string::npos, !slices);
+    // 6xxx on a SmartSDR CAT port is right.
+    CHECK(rig::flexAdvice(2036, "127.0.0.1:5002").empty());
+    CHECK(rig::flexAdvice(2036, "COM5").empty());
+    // A slice model names its slice.
+    CHECK(rig::flexAdvice(23007, "192.168.1.50:4992").find("reads slice C") != std::string::npos);
+    CHECK(rig::flexAdvice(3070, "192.168.1.50:4992").empty());
+
+    // It ends the problem when the rig can't be opened (nothing listens
+    // on this computer's 4992).
+    HamlibRig r;
+    radio::RigSettings s = dummy();
+    s.model = 2036;
+    s.keyRig = false;
+    s.port = "127.0.0.1:4992";
+    r.start(s);
+    CHECK(waitFor(r, [](const HamlibRig::Status& st) { return !st.problem.empty(); }));
+    CHECK(r.status().problem.find("Couldn't open the 6xxx on 127.0.0.1:4992") != std::string::npos);
+    CHECK(r.status().problem.find(". 4992 is the radio's own SmartSDR port") != std::string::npos);
+    r.stop();
+}
+
+#ifndef _WIN32
+// A pretend FlexRadio 6000 on SmartSDR's own TCP port, as Hamlib's
+// SmartSDR backend reads one: the hello lines, then slice 0's status on
+// "sub slice 0" and on "slice tune 0", and an R line answering every
+// command. Hamlib always dials port 4992 and refuses 127.0.0.1 for
+// SmartSDR, so it listens on 127.0.0.2:4992 (Linux answers all of
+// 127/8; elsewhere, or with 4992 taken, listening() is false).
+class FakeFlex
+{
+public:
+    FakeFlex()
+    {
+        listener_ = socket(AF_INET, SOCK_STREAM, 0);
+        int on = 1;
+        setsockopt(listener_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
+        sockaddr_in a{};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(0x7f000002);
+        a.sin_port = htons(4992);
+        listening_ = listener_ >= 0 && bind(listener_, (sockaddr*)&a, sizeof a) == 0 && listen(listener_, 4) == 0;
+        if (listening_) thread_ = std::thread([this]() { run(); });
+    }
+    ~FakeFlex()
+    {
+        stopping_ = true;
+        if (thread_.joinable()) thread_.join();
+        if (listener_ >= 0) close(listener_);
+    }
+    bool listening() const { return listening_; }
+    std::vector<std::string> commands() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return commands_;
+    }
+
+private:
+    void run()
+    {
+        int client = -1;
+        std::string in;
+        while (!stopping_)
+        {
+            pollfd p{client >= 0 ? client : listener_, POLLIN, 0};
+            if (poll(&p, 1, 50) <= 0) continue;
+            if (client < 0)
+            {
+                client = accept(listener_, nullptr, nullptr);
+                say(client, "V1.4.0.0\nH2B9F31A7\n");
+                continue;
+            }
+            char buf[512];
+            ssize_t n = recv(client, buf, sizeof buf, 0);
+            if (n <= 0)
+            {
+                close(client);
+                client = -1;
+                in.clear();
+                continue;
+            }
+            in.append(buf, (size_t)n);
+            for (size_t nl; (nl = in.find('\n')) != std::string::npos; in.erase(0, nl + 1))
+            {
+                std::string line = in.substr(0, nl);
+                size_t bar = line.find('|');
+                if (line.empty() || line[0] != 'C' || bar == std::string::npos) continue;
+                std::string seq = line.substr(1, bar - 1), command = line.substr(bar + 1);
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    commands_.push_back(command);
+                }
+                double mhz = 0;
+                if (command == "sub slice 0" || std::sscanf(command.c_str(), "slice tune 0 %lf", &mhz) == 1)
+                {
+                    if (mhz > 0) mhz_ = mhz;
+                    char status[256];
+                    std::snprintf(status, sizeof status,
+                                  "S2B9F31A7|slice 0 in_use=1 RF_frequency=%.6f index_letter=A mode=DIGU "
+                                  "filter_lo=0 filter_hi=3000 tx=1 active=1\n",
+                                  mhz_);
+                    say(client, status);
+                }
+                say(client, "R" + seq + "|0|\n");
+            }
+        }
+        if (client >= 0) close(client);
+    }
+    static void say(int fd, const std::string& text)
+    {
+#ifdef MSG_NOSIGNAL
+        (void)send(fd, text.data(), text.size(), MSG_NOSIGNAL);
+#else
+        (void)send(fd, text.data(), text.size(), 0);
+#endif
+    }
+
+    int listener_ = -1;
+    bool listening_ = false;
+    std::atomic<bool> stopping_{false};
+    double mhz_ = 14.105;
+    mutable std::mutex mutex_;
+    std::vector<std::string> commands_;
+    std::thread thread_;
+};
+
+// Hamlib's SmartSDR Slice A on the pretend radio: the dial read, a tune
+// sent and read back, and nothing keyed.
+void smartSdr()
+{
+    if (!rig::model(23005))
+    {
+        std::printf("%s has no SmartSDR models: skipping the pretend Flex\n", rig::hamlibVersion().c_str());
+        return;
+    }
+    // Refused, with the advice: SmartSDR is the radio's, never this
+    // computer's.
+    HamlibRig r;
+    radio::RigSettings s = dummy();
+    s.model = 23005;
+    s.keyRig = false;
+    s.port = "127.0.0.1:4992";
+    r.start(s);
+    CHECK(waitFor(r, [](const HamlibRig::Status& st) { return !st.problem.empty(); }));
+    CHECK(r.status().problem.find("not 127.0.0.1") != std::string::npos);
+    r.stop();
+
+    FakeFlex flex;
+    if (!flex.listening())
+    {
+        std::printf("Can't listen on 127.0.0.2:4992: skipping the pretend Flex\n");
+        return;
+    }
+    // The address alone: Hamlib adds SmartSDR's port.
+    s.port = "127.0.0.2";
+    r.start(s);
+    CHECK(waitFor(r, [](const HamlibRig::Status& st) { return st.open && st.hz; }));
+    CHECK(r.status().hz && *r.status().hz == 14105000);
+    CHECK_EQ(r.status().rig, std::string("FlexRadio SmartSDR Slice A"));
+    r.setFrequency(7066000);
+    CHECK(waitFor(r, [](const HamlibRig::Status& st) { return st.tunes == 1 && st.hz && *st.hz == 7066000; }));
+    CHECK(r.status().tuneProblem.empty());
+    r.stop();
+    bool subscribed = false, keyed = false;
+    for (const std::string& c : flex.commands())
+    {
+        subscribed = subscribed || c == "sub slice 0";
+        keyed = keyed || c.rfind("xmit", 0) == 0;
+    }
+    CHECK(subscribed);
+    CHECK(!keyed);
+}
+#endif
+
 } // namespace
 
 int main()
@@ -271,5 +468,9 @@ int main()
     filterWatch();
     tune();
     cantOpen();
+    flexAdvice();
+#ifndef _WIN32
+    smartSdr();
+#endif
     return ragtime_test::finish();
 }

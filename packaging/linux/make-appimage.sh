@@ -10,6 +10,10 @@
 # The AppImage carries the libraries of the system it was built on, so build
 # it on the oldest Linux it should run on (Ubuntu 24.04: glibc 2.39).
 #
+# Hamlib is built from source and linked in (-DRAGTIME_BUILD_HAMLIB=ON,
+# needing autoconf, automake and libtool), as on Windows and the Mac, so
+# every download has the same Hamlib, whatever the build system's is.
+#
 # It carries libsotto, for voice messages, built by packaging/build-sotto.sh
 # at the pinned commit (or set RAGTIME_SOTTO_DIR to its output), with the
 # Codec 2 it links and both licences in usr/share/doc/ragtime/licences.
@@ -22,7 +26,8 @@ OUT="$ROOT/dist/Ragtime-$RAGTIME_RELEASE-$ARCH.AppImage"
 
 if [ -z "$BUILD_DIR" ]; then
     BUILD_DIR="$ROOT/build-appimage"
-    cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DRAGTIME_TESTS=OFF -DRAGTIME_BUILD_SOTTO=OFF
+    cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DRAGTIME_TESTS=OFF -DRAGTIME_BUILD_SOTTO=OFF \
+        -DRAGTIME_BUILD_HAMLIB=ON
     cmake --build "$BUILD_DIR" -j"$(nproc)"
 fi
 
@@ -70,6 +75,10 @@ fi
 PLUGIN_ARGS+=(--library "$SOTTO_DIR/libsotto.so.0")
 mkdir -p AppDir/usr/share/doc/ragtime/licences
 cp "$SOTTO_DIR"/licences/*.txt AppDir/usr/share/doc/ragtime/licences/
+# Hamlib is built into ragtime (LGPL-2.1).
+if [ -f "$BUILD_DIR/_deps/hamlib/src/hamlib_build/COPYING.LIB" ]; then
+    cp "$BUILD_DIR/_deps/hamlib/src/hamlib_build/COPYING.LIB" AppDir/usr/share/doc/ragtime/licences/hamlib.txt
+fi
 # RNNoise is built into ragtime (BSD-3-Clause).
 if [ -f "$BUILD_DIR/_deps/rnnoise-src/COPYING" ]; then
     cp "$BUILD_DIR/_deps/rnnoise-src/COPYING" AppDir/usr/share/doc/ragtime/licences/rnnoise.txt
