@@ -6,8 +6,15 @@
 # and 5. From 8a8c677 the low rates' pitch fixes (an onset's voiced pitch,
 # outliers left out of the 600/400 pitch line), encoder only; from
 # aa44cdb a cap on 600/400 hiss in frames with no hiss bits, decoder
-# only. The same bits throughout, and its v3.8 frames and sound are
-# bit-identical to 594ca65's.
+# only. From e707134 better encoders only: the pitch tracker all four
+# rates share lifts short sub-octave runs and holds word-final creak
+# (sotto's "v3.10 encoder", still sending v3.8 frames), the 2400 encoder
+# picks the shape index by a peak-weighted error, and 600/400 weigh creak
+# down in the pitch line; the decoders and the exported API are
+# unchanged. The same frame
+# layout throughout, so clips sent with any earlier pin play the same:
+# every decoder here gives sound bit-identical to aa44cdb's for the same
+# frames, codec 1's included.
 # Ragtime needs a library whose sotto_format() says "sotto v3.8, shape
 # 9-9-8-8", so the variant is named here rather than left to sotto's
 # Makefile. From this commit sotto's generated C tables are committed, so
@@ -15,5 +22,5 @@
 # links it (LGPL through Codec 2); the packages carry it beside ragtime with
 # its licences. Sourced by build-sotto.sh.
 SOTTO_REPO=${SOTTO_REPO:-https://github.com/baitisj/sotto.git}
-SOTTO_COMMIT=aa44cdb69e30fe5feb5666db3bde4ab3a5d1e031
+SOTTO_COMMIT=e707134fd7f9e2721b55b9d983b77a8aa5593552
 SOTTO_VARIANT=v3.8
