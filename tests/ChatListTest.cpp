@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <map>
 
 #include <wx/app.h>
 #include <wx/frame.h>
@@ -35,11 +36,15 @@ class Rows : public ChatList
 public:
     explicit Rows(wxWindow* parent) : ChatList(parent) {}
 
+    // A row's changed text.
+    std::map<size_t, wxString> changed;
+
 protected:
     wxString OnGetItem(size_t n) const override
     {
         // Every fifth a taller one, as a voice card or a picture is.
-        wxString row = wxString::Format("<b>W1AW</b> line %zu of the chat, long enough to read", n);
+        auto c = changed.find(n);
+        wxString row = c != changed.end() ? c->second : wxString::Format("<b>W1AW</b> line %zu of the chat, long enough to read", n);
         if (n % 5 == 2) row << "<br>a voice message<br>its strip<br>and its length";
         return row;
     }
@@ -126,6 +131,31 @@ int main(int argc, char** argv)
         settle();
         CHECK(newestShows(*list));
         CHECK_EQ(list->GetVisibleRowsEnd(), (size_t)62);
+
+        // A change lays out only the rows that changed, not all on screen
+        // again (each change used to build every row on screen some eight
+        // times over).
+        list->showRows(62);
+        settle();
+        size_t before = list->rowsBuilt();
+        list->showRows(62);
+        settle();
+        CHECK_EQ(list->rowsBuilt() - before, (size_t)0);
+        list->changed[list->GetVisibleRowsEnd() - 1] = "<b>W1AW</b> line now edited";
+        before = list->rowsBuilt();
+        list->showRows(62);
+        settle();
+        CHECK(list->rowsBuilt() - before >= 1);
+        CHECK(list->rowsBuilt() - before <= 2);
+        // A new row lays out the new one, and the rows on screen again when
+        // the scroll bar moving resizes the list, as GTK does (some 24
+        // builds here, against 175 before).
+        before = list->rowsBuilt();
+        list->showRows(63);
+        settle();
+        CHECK(newestShows(*list));
+        CHECK(list->rowsBuilt() - before >= 1);
+        CHECK(list->rowsBuilt() - before < 40);
 
         frame->Destroy();
         settle();

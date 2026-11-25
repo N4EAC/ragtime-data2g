@@ -291,7 +291,7 @@ protected:
             owner_->onFileAction_(m->file, std::string(href.utf8_str()));
     }
 
-    wxString OnGetItemMarkup(size_t n) const override
+    wxString rowMarkup(size_t n) const override
     {
         return listText(OnGetItem(n), IsSelected(n));
     }
@@ -811,7 +811,7 @@ void BroadcastPage::refreshEdit()
 
 void BroadcastPage::refreshVoices()
 {
-    list_->RefreshAll();
+    list_->refreshChanged();
 }
 
 void BroadcastPage::setGearLabel(const wxString& label, const wxString& tooltip, double bitsPerSecond)
