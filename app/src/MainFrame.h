@@ -130,6 +130,10 @@ private:
     void stationPicked(const std::string& call);
     void stationMenu(const std::string& call);
     void updateTabLabels();
+    // Recent work's pick, read only on the Session tab while no session is
+    // up ("" ends it); and the review ended, back to the tab it took over.
+    void reviewSession(const std::string& call);
+    void endReview();
 
     // Sessions: entered only with
     // Call or by being called, left only with Leave or Leave now.
@@ -417,8 +421,9 @@ private:
     size_t unread_ = 0;
     uint64_t notifiedMessage_ = 0;  // the newest message id notifyBroadcast has looked at
     size_t sessionUnread_ = 0;  // heard in the session while its tab is out of sight
-    bool canBoldTabs_ = false;  // a tab's label can be bold here (GTK)
-    int sessionBold_ = -1;      // the Session tab's label is bold (1) or plain (0); -1 not yet set
+    bool canStyleTabs_ = false; // a tab's label can be bold or greyed here (GTK)
+    int sessionStyle_ = -1;     // the Session tab's label: 1 bold, 2 greyed, 3 both; -1 not yet set
+    int tabBeforeReview_ = -1;  // the tab showing when a review took the Session tab
     size_t reactionsUnread_ = 0;    // reactions to our lines heard while the Broadcast tab is out of sight
     std::string reactionNote_;      // the latest, shown over the transfers line until reactionNoteUntilMs_
     uint64_t reactionNoteUntilMs_ = 0;

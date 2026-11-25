@@ -654,7 +654,8 @@ void MainFrame::buildLayout()
     tabs_->AddPage(sessionPage_, wxString::FromUTF8("Session \xc2\xb7 none"));
     filesPage_ = new FilesPage(tabs_, history_);
     tabs_->AddPage(filesPage_, "Files");
-    canBoldTabs_ = boldTab(tabs_, TAB_SESSION, false);
+    canStyleTabs_ = styleTab(tabs_, TAB_SESSION, false, true);
+    sessionStyle_ = 2;
     auto* middleSizer = new wxBoxSizer(wxVERTICAL);
     middleSizer->Add(tabs_, 1, wxEXPAND);
     middle_->SetSizer(middleSizer);
@@ -741,7 +742,11 @@ void MainFrame::buildLayout()
 
     // The station list.
     stationList_->onSelect([this](const std::string& call) {
-        if (!call.empty()) recent_->clearSelection();
+        if (!call.empty())
+        {
+            recent_->clearSelection();
+            endReview();
+        }
         stationPicked(call);
     });
     // Double-clicked (or Enter): a ragchew with it (Jeff, 2026-11-13).
@@ -751,10 +756,13 @@ void MainFrame::buildLayout()
     stationList_->bells([this](const std::string& call) { return watch_.belled(call); },
                         [this](const std::string& call) { return watch_.bellTip(call); });
 
-    // Recent work: as the station list, and its order kept.
+    // Recent work: as the station list, and its order kept. A pick also
+    // shows the earlier ragchews with the station, read only, on the
+    // Session tab (Jeff, 2026-11-25).
     recent_->onSelect([this](const std::string& call) {
         if (!call.empty()) stationList_->clearSelection();
         stationPicked(call);
+        reviewSession(call);
     });
     recent_->onActivate([this](const std::string& call) { openSession(call); });
     recent_->onMenu([this](const std::string& call) { stationMenu(call); });
@@ -836,7 +844,7 @@ void MainFrame::buildLayout()
     sessionPage_->onCancel([this]() { leaveSession(); });
     sessionPage_->onLeave([this]() { leaveSession(); });
     sessionPage_->onLeaveNow([this]() { leaveSessionNow(); });
-    sessionPage_->onCallAgain([this]() { callStation(session_.peer()); });
+    sessionPage_->onCallAgain([this](const std::string& call) { callStation(call); });
     sessionPage_->onCallsign([this](const std::string& call) { openSession(call); },
                              [this](const std::string& call) { return knownStation(call); });
     sessionPage_->onResend([this](uint64_t id) {
@@ -1574,10 +1582,14 @@ void MainFrame::updateTabLabels()
         placeTabToggle();
     }
 
-    // Session · W1AW, Session · calling W1AW, or greyed: Session · none.
+    // Session · W1AW, Session · calling W1AW, or greyed: Session · none,
+    // and Session · W1AW (read only) while Recent work's pick is reviewed.
     if (tabs_->GetSelection() == TAB_SESSION && IsActive()) sessionUnread_ = 0;
+    const std::string& reviewing = sessionPage_->reviewing();
     wxString session = wxString::FromUTF8("Session \xc2\xb7 ");
-    if (!session_.active())
+    if (!reviewing.empty())
+        session += utf8(reviewing) + " (read only)";
+    else if (!session_.active())
         session += "none";
     else if (session_.phase() == session::SessionChat::Phase::Calling)
         session += "calling " + utf8(session_.peer());
@@ -1585,22 +1597,66 @@ void MainFrame::updateTabLabels()
         session += utf8(session_.peer());
     if (sessionUnread_ > 0) session += wxString::Format(" (%zu)", sessionUnread_);
     // Bold while it has lines not yet seen (Jeff, 2026-11-13); where a tab
-    // can't be bold, a dot before it.
+    // can't be bold, a dot before it. Greyed with no session up, as a lost
+    // or ended one leaves it, and while reviewing (Jeff, 2026-11-25).
     const bool bold = sessionUnread_ > 0;
-    if (bold && !canBoldTabs_) session = wxString::FromUTF8("\xe2\x97\x8f ") + session;
+    const bool grey = !reviewing.empty() || !session_.active();
+    if (bold && !canStyleTabs_) session = wxString::FromUTF8("\xe2\x97\x8f ") + session;
     bool changed = false;
     if (tabs_->GetPageText(TAB_SESSION) != session)
     {
         tabs_->SetPageText(TAB_SESSION, session);
         changed = true;
     }
-    if (canBoldTabs_ && (int)bold != sessionBold_)
+    const int style = (bold ? 1 : 0) | (grey ? 2 : 0);
+    if (canStyleTabs_ && style != sessionStyle_)
     {
-        boldTab(tabs_, TAB_SESSION, bold);
-        sessionBold_ = (int)bold;
+        styleTab(tabs_, TAB_SESSION, bold, grey);
+        sessionStyle_ = style;
         changed = true;
     }
     if (changed) placeTabToggle();
+}
+
+void MainFrame::reviewSession(const std::string& call)
+{
+    std::string them = protocol::normalCallsign(call);
+    if (them.empty())
+    {
+        endReview();
+        return;
+    }
+    // A session up keeps the tab: its partner's is already there.
+    if (session_.active())
+    {
+        if (session_.peer() == them) tabs_->SetSelection(TAB_SESSION);
+        return;
+    }
+    std::vector<session::Message> kept = sessionLog_.load(them, session::SessionChat::MAX_MESSAGES);
+    if (kept.empty())
+    {
+        // Never ragchewed with: nothing to show, and the tab left as it was.
+        endReview();
+        return;
+    }
+    uint64_t id = 1;
+    for (session::Message& m : kept) m.id = id++;
+    if (sessionPage_->reviewing().empty()) tabBeforeReview_ = tabs_->GetSelection();
+    sessionPage_->review(them, std::move(kept));
+    tabs_->SetSelection(TAB_SESSION);
+    updateTabLabels();
+}
+
+void MainFrame::endReview()
+{
+    if (sessionPage_->reviewing().empty()) return;
+    sessionPage_->endReview();
+    // Back to the tab the review took over, unless the operator moved on.
+    if (tabs_->GetSelection() == TAB_SESSION && tabBeforeReview_ >= 0 && tabBeforeReview_ != TAB_SESSION
+        && (size_t)tabBeforeReview_ < tabs_->GetPageCount())
+        tabs_->SetSelection((size_t)tabBeforeReview_);
+    tabBeforeReview_ = -1;
+    updateTabLabels();
 }
 
 //-------------------------------------------------------------------------

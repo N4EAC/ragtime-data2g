@@ -2,6 +2,7 @@
 #define RAGTIME_SESSION_PAGE_H
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <string>
@@ -30,6 +31,12 @@ class SessionMessages;
 // With no session up the tab is greyed: the last session's messages stay
 // readable, and nothing can be typed.
 //
+// A station picked in Recent work, with no session up, shows here read
+// only (Jeff, 2026-11-25): its earlier ragchews from the session log,
+// greyed as an ended session is, with the words in the typing line where a
+// lost session puts its own, and a button to call it. A session starting
+// ends the review.
+//
 // Files (package G) show among the messages as cards: an offer to us with
 // Save, Save as..., Decline and its countdown, and "4,096 of 7,000 kept
 // from before" when a part is kept; a file moving either way with its
@@ -55,7 +62,8 @@ public:
     void onCancel(std::function<void()> fn) { onCancel_ = std::move(fn); }
     void onLeave(std::function<void()> fn) { onLeave_ = std::move(fn); }
     void onLeaveNow(std::function<void()> fn) { onLeaveNow_ = std::move(fn); }
-    void onCallAgain(std::function<void()> fn) { onCallAgain_ = std::move(fn); }
+    // Call again pressed, or Call in a review: the station to call.
+    void onCallAgain(std::function<void(const std::string& call)> fn) { onCallAgain_ = std::move(fn); }
     // A callsign double-clicked in a line: the partner's, or a station
     // isStation knows named in the text.
     void onCallsign(std::function<void(const std::string& call)> fn,
@@ -119,6 +127,15 @@ public:
     void setPaused(bool paused, const wxString& why = wxString());
     void focusCompose();
 
+    // The earlier ragchews with call, read only, in place of the session's
+    // messages until endReview, or until a session starts.
+    void review(const std::string& call, std::vector<ragtime::session::Message> messages);
+    void endReview();
+    // The station under review, or "" when none is.
+    const std::string& reviewing() const { return reviewCall_; }
+    // The words in the typing line during a review.
+    static std::string reviewWords(const std::string& call);
+
 private:
     friend class SessionMessages;
 
@@ -130,6 +147,13 @@ private:
         uint64_t transfer = 0;      // the file's id
         uint64_t atMs = 0;
     };
+
+    // What the list shows: the review's, or the session's.
+    const std::deque<ragtime::session::Message>& shownMessages() const
+    {
+        return reviewCall_.empty() ? session_.messages() : review_;
+    }
+    const std::string& shownPeer() const { return reviewCall_.empty() ? session_.peer() : reviewCall_; }
 
     void send();
     void showMenu(int row);
@@ -156,7 +180,11 @@ private:
     wxStaticText* paused_ = nullptr;
     wxTextCtrl* compose_ = nullptr;
     wxFont composeFont_;
-    bool showingLost_ = false;      // the line holds the red "Session lost" words
+    bool showingWords_ = false;     // the line holds words, not typing: "Session lost", or a review's
+    std::string shownWords_;
+    std::string reviewCall_;        // the station under review, or ""
+    std::deque<ragtime::session::Message> review_;
+    std::string shownReview_;
     wxButton* send_ = nullptr;
     wxButton* sendFile_ = nullptr;
     wxButton* sendPicture_ = nullptr;
@@ -171,7 +199,8 @@ private:
     int shownPhase_ = -1;
 
     std::function<bool(const std::string&)> onSend_;
-    std::function<void()> onCancel_, onLeave_, onLeaveNow_, onCallAgain_, onSendFile_, onSendPicture_, onVoiceDeck_;
+    std::function<void()> onCancel_, onLeave_, onLeaveNow_, onSendFile_, onSendPicture_, onVoiceDeck_;
+    std::function<void(const std::string&)> onCallAgain_;
     std::function<wxString(uint64_t, const wxWindow*, const wxString&, const wxString&)> pictureHtml_;
     std::function<wxString(const std::string&, const wxWindow*, const wxString&)> pastPictureHtml_;
     std::function<wxString(const std::string&, const wxWindow*, bool)> voiceHtml_;
