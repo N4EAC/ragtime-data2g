@@ -232,6 +232,9 @@ private:
     // session line's picture from it ("" when it can't be read).
     bool shelvePictureFile(const std::string& path);
     wxString pastPictureHtml(const std::string& path, const wxWindow* list, const wxString& href);
+    // Past pictures the reader has decoded go on the shelf, and the rows
+    // showing them are drawn again.
+    void takeReadPictures();
     void showInFrame(const std::string& key);
 
     // Voice cards: each voice message's
@@ -388,6 +391,8 @@ private:
     PictureShelf pictures_;
     std::map<std::string, PictureFrame*> pictureFrames_;   // open, by shelf key
     std::set<std::string> unreadablePictures_;             // past pictures whose files are gone
+    PictureReader pictureReader_;                          // past pictures, decoded off the window's thread
+    std::map<std::string, std::pair<int, int>> pictureSizes_;  // past pictures' own sizes, from their heads
     VoiceShelf voices_;
     std::set<std::string> unreadableVoices_;               // past voice files gone or unreadable
     ragtime::voice::PlayQueue voiceQueue_;
@@ -409,6 +414,7 @@ private:
     wxMenu* viewMenu_ = nullptr;
     wxTimer clock_;
     wxTimer voiceTimer_;        // the voice cards' playhead, while a clip plays
+    wxTimer pictureTimer_;      // past pictures coming from the reader, while it reads
     int64_t lastClockMs_ = 0;   // steady clock, at the last clock tick
 
     bool globusOn_ = true;
