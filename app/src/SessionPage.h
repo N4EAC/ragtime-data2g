@@ -72,6 +72,14 @@ public:
     void onResend(std::function<void(uint64_t id)> fn) { onResend_ = std::move(fn); }
     // A reaction picked on a message's menu or chip, with its palette code.
     void onReact(std::function<void(uint64_t id, uint8_t code)> fn) { onReact_ = std::move(fn); }
+    // The station's history: loadOlder puts the page before the first row
+    // in front and says how many came; hold keeps old rows while the list
+    // isn't following the newest.
+    void onHistory(std::function<size_t()> loadOlder, std::function<void(bool hold)> hold)
+    {
+        onLoadOlder_ = std::move(loadOlder);
+        onHoldHistory_ = std::move(hold);
+    }
     // Send file... pressed.
     void onSendFile(std::function<void()> fn) { onSendFile_ = std::move(fn); }
     // Inline pictures: the picture
@@ -210,6 +218,8 @@ private:
     std::function<void(const std::string&, uint64_t)> onFileAction_;
     std::function<void(uint64_t)> onResend_;
     std::function<void(uint64_t, uint8_t)> onReact_;
+    std::function<size_t()> onLoadOlder_;
+    std::function<void(bool)> onHoldHistory_;
 };
 
 #endif

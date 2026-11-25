@@ -321,6 +321,18 @@ SessionPage::SessionPage(wxWindow* parent, const SessionChat& session, const rag
     strip_->SetSizer(stripSizer);
 
     list_ = new SessionMessages(this);
+    // Scrolled near the top: the page of the station's history before it.
+    list_->onNearTop([this]() {
+        if (!onLoadOlder_) return;
+        if (onHoldHistory_) onHoldHistory_(true);
+        const size_t before = items_.size();
+        if (onLoadOlder_() == 0) return;
+        shownVersion_ = session_.version();
+        shownFiles_ = files_.changes();
+        rebuild(nowMs_);
+        // The new rows are all older than any there: they came in front.
+        list_->showRowsAbove(items_.size(), items_.size() - std::min(before, items_.size()));
+    });
     followThemeBackground(list_, wxSYS_COLOUR_LISTBOX);
     scrollbarBeside(list_);
     paused_ = new wxStaticText(this, wxID_ANY,
@@ -559,6 +571,9 @@ void SessionPage::refresh(uint64_t nowMs, long utcOffsetS)
 
     nowMs_ = nowMs;
     utcOffsetS_ = utcOffsetS;
+    // Old rows stay while the operator reads up there, and go once the
+    // list follows the newest again.
+    if (onHoldHistory_) onHoldHistory_(!list_->following());
     if (shownVersion_ != session_.version() || shownFiles_ != files_.changes() || liveFiles_)
     {
         shownVersion_ = session_.version();

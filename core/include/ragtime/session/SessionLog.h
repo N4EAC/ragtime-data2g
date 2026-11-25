@@ -1,5 +1,8 @@
 // The Session tab's lasting log: what was said with each station, kept on
-// disk so a later session with it carries on where the last one ended.
+// disk so a later session with it carries on where the last one ended. It
+// is kept for good: past its size a station's file is rolled into its
+// history folder ("W1AW-history", history/History.h), and the tab reads it
+// back a page at a time.
 //
 // One file per station in the folder given, named for its callsign
 // ("W1AW.log", "TEST1_P.log"), appended to as things happen, one line
@@ -36,6 +39,7 @@
 #include <string>
 #include <vector>
 
+#include "ragtime/history/History.h"
 #include "ragtime/session/SessionChat.h"
 
 namespace ragtime
@@ -46,7 +50,7 @@ namespace session
 class SessionLog
 {
 public:
-    // A station's file is cut back to its later half, at a session's
+    // A station's file is rolled into its history folder, at a session's
     // start, once it grows past this.
     static constexpr uint64_t MAX_FILE_BYTES = 1024 * 1024;
 
@@ -64,6 +68,8 @@ public:
     // message of ours still Sent or Queued when its session ended comes
     // back Not delivered. Ids are 0, for the caller to give.
     std::vector<Message> load(const std::string& peer, size_t max) const;
+    // The same a page at a time, from the newest, through the rolled files.
+    history::Pages<Message> history(const std::string& peer) const;
 
     void began(const std::string& peer, uint64_t nowMs);
     void added(const std::string& peer, const Message& message);
@@ -76,7 +82,6 @@ public:
 
 private:
     void append(const std::string& peer, const std::string& line);
-    void compact(const std::string& peer);
 
     std::string folder_;
 };

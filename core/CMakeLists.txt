@@ -34,6 +34,7 @@ add_library(ragtime_core STATIC
     # Package E: the station list and the Broadcast tab's engine.
     src/broadcast/BroadcastChat.cpp
     src/broadcast/BroadcastLog.cpp
+    src/history/History.cpp
     src/broadcast/Stations.cpp
     src/broadcast/WatchList.cpp
     # Package H: broadcast files, seals and repair.

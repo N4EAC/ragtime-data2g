@@ -810,6 +810,7 @@ void MainFrame::buildLayout()
             return r;
         },
         [this](uint64_t id) { return editInfo(id); });
+    broadcast_->onHistory([this]() { return chat_.loadOlder(); }, [this](bool hold) { chat_.holdHistory(hold); });
     broadcast_->onReact([this](uint64_t id, uint8_t code) {
         uint64_t now = HostConnection::nowMs();
         if (code == 0) chat_.unreact(id);
@@ -852,6 +853,7 @@ void MainFrame::buildLayout()
         host_->flush();
         refreshSession();
     });
+    sessionPage_->onHistory([this]() { return session_.loadOlder(); }, [this](bool hold) { session_.holdHistory(hold); });
     sessionPage_->onReact([this](uint64_t id, uint8_t code) {
         if (!session_.react(id, code, HostConnection::nowMs())) return;
         host_->flush();
@@ -1565,7 +1567,7 @@ void MainFrame::updateTabLabels()
     {
         newest = std::max(newest, m.id);
         // A station's ping to us is answered by itself: not a message.
-        if (!m.ours && m.kind != broadcast::Message::Kind::Ping && m.id > seenMessage_) unread++;
+        if (!m.ours && !m.past && m.kind != broadcast::Message::Kind::Ping && m.id > seenMessage_) unread++;
     }
     if (looking)
     {

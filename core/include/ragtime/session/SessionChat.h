@@ -33,7 +33,10 @@
 //
 // - History: with a SessionLog, a call or a session shows what was said
 //   with that station before, each earlier session closed by a rule, and
-//   the log carries on below.
+//   the log carries on below. It shows the newest HISTORY_PAGE rows, and
+//   loadOlder() puts the page before them in front, back to the station's
+//   first session; past MAX_MESSAGES the oldest go back to the log's
+//   pages, but not while the history is held.
 //
 // Files (package G) and anything else that rides in a session plug in as
 // a SessionTraffic. No sockets and no clock: the app hands in the data
@@ -48,6 +51,7 @@
 #include <utility>
 #include <vector>
 
+#include "ragtime/history/History.h"
 #include "ragtime/link/HostLink.h"
 #include "ragtime/protocol/Reactions.h"
 #include "ragtime/protocol/Records.h"
@@ -294,8 +298,12 @@ public:
     static constexpr uint64_t HOST_IDLE_CLOSE_MS = 300 * 1000;
     static constexpr uint64_t HOST_IDLE_EARLY_MS = 5 * 1000;
     static constexpr uint64_t HOST_IDLE_LATE_MS = 30 * 1000;
-    // Messages kept in the tab; the oldest go first.
+    // Messages kept in the tab; the oldest go first, back to the log's
+    // pages, unless the history is held.
     static constexpr size_t MAX_MESSAGES = 2000;
+    // The rows of history read in at once: the newest first, then a page
+    // more each time the tab asks.
+    static constexpr size_t HISTORY_PAGE = 500;
     // The longest message taken at once, in bytes.
     static constexpr size_t MAX_TYPED = 2000;
     // A cut (CLEANTXBUFFER, docs/PROTOCOL.md "Cuts") is asked for once
@@ -318,6 +326,16 @@ public:
     // with the station before, and its own messages are added. None: each
     // session starts with an empty tab.
     void setLog(SessionLog* log) { log_ = log; }
+
+    // The page of the station's history before the tab's first row, put in
+    // front of it, marked past: how many rows came (0 at the start of the
+    // history, or with no log).
+    size_t loadOlder();
+    // True while the log has rows from before the tab's first.
+    bool olderInLog() const { return log_ != nullptr && pages_.more(); }
+    // While held, no old row is dropped: the operator is reading up there.
+    // Let go, the tab goes back to MAX_MESSAGES rows.
+    void holdHistory(bool hold);
 
     //---------------------------------------------------------------------
     // The operator
@@ -452,6 +470,8 @@ private:
     void checkFarewell(uint64_t nowMs);
     void heard(uint64_t nowMs);
     void trim();
+    // Rules heading a page of history go back to the pages.
+    void keepUnder(std::vector<Message>& page);
     void endAfterglow();
     void endLog();
     void showHistory(const std::string& peer);
@@ -463,6 +483,8 @@ private:
     Settings settings_;
     SessionTraffic* traffic_ = nullptr;
     SessionLog* log_ = nullptr;
+    history::Pages<Message> pages_;     // the station's rows older than the tab's
+    bool holdingHistory_ = false;
     uint64_t logEndMs_ = 0;         // a session's end, kept back through the afterglow
 
     Phase phase_ = Phase::None;

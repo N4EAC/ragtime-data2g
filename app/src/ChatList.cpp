@@ -188,9 +188,32 @@ void ChatList::UpdateScrollbar()
     // Decided before wx tells the scroll bar, which on GTK can send a size
     // event straight away.
     const size_t top = GetVisibleRowsBegin();
-    if (!pinning_ && top != seenTop_) following_ = lastRowShows();
+    const bool theirs = !pinning_ && top != seenTop_;
+    if (theirs) following_ = lastRowShows();
     seenTop_ = top;
     wxHtmlListBox::UpdateScrollbar();
+    // Scrolled near the top: older rows, once this scroll is done.
+    if (theirs && top < NEAR_TOP_ROWS && onNearTop_ && !askedTop_)
+    {
+        askedTop_ = true;
+        CallAfter([this]() {
+            askedTop_ = false;
+            if (onNearTop_) onNearTop_();
+        });
+    }
+}
+
+void ChatList::showRowsAbove(size_t count, size_t added)
+{
+    const size_t top = GetVisibleRowsBegin();
+    pinning_ = true;
+    // Every row has moved down: wx forgets them all, and so does the list.
+    SetItemCount(count);
+    RefreshAll();
+    if (!following_) ScrollToRow(std::min(top + added, count > 0 ? count - 1 : 0));
+    pinning_ = false;
+    seenTop_ = GetVisibleRowsBegin();
+    if (following_) pin();
 }
 
 void ChatList::pin()
