@@ -269,6 +269,7 @@ struct End
         uint16_t ack = 0;
         std::vector<int> channels;
         bool open = false;
+        uint64_t openMs = 0;    // its burst went then
     };
     std::optional<Window> window;
     struct Hand
@@ -281,6 +282,16 @@ struct End
 };
 
 int refs = 0;
+
+// Every burst keyed, and by whom, so a burst over a Hand's slot can spoil
+// it: a Hand is some 19 dB under the noise, and a data burst far over it.
+struct Keyed
+{
+    const End* by = nullptr;
+    uint64_t atMs = 0;
+};
+std::vector<Keyed> keyed;
+constexpr uint64_t BURST_MS = 1500;     // one codeword, as MODES has it
 
 std::vector<std::string> words(const std::string& line)
 {
@@ -342,9 +353,14 @@ void step(std::vector<End*> ends)
             if (f.command != link::KISS_ACKMODE || f.payload.size() < 2) continue;
             sent = true;
             uint16_t tag = (uint16_t)((f.payload[0] << 8) | f.payload[1]);
-            if (end->window && tag == end->window->ack) end->window->open = true;
+            if (end->window && tag == end->window->ack && !end->window->open)
+            {
+                end->window->open = true;
+                end->window->openMs = now;
+            }
         }
         if (!sent) continue;
+        keyed.push_back({end, now});
         int ref = ++refs;
         for (End* other : ends)
         {
@@ -396,11 +412,18 @@ void raiseHands(std::vector<End*> ends, bool jump = true)
     for (End* net : ends)
     {
         if (!net->window || !net->window->open) continue;
+        // The Hands' slot: the delay after its burst, give or take the
+        // search. Another station's burst on the air in it spoils them all.
+        uint64_t from = net->window->openMs + (uint64_t)((3.0 - link::HAND_SEARCH_S) * 1000.0);
+        uint64_t to = net->window->openMs + (uint64_t)((3.0 + link::HAND_SECONDS + link::HAND_SEARCH_S) * 1000.0);
+        bool spoilt = std::any_of(keyed.begin(), keyed.end(), [&](const Keyed& k) {
+            return k.by != net && k.atMs < to && k.atMs + BURST_MS > from;
+        });
         std::map<int, std::vector<End*>> byChannel;
         for (End* end : ends)
         {
             if (end == net || !end->hand) continue;
-            if (end->hand->tag != net->window->tag) continue;
+            if (spoilt || end->hand->tag != net->window->tag) continue;
             if (std::find(net->window->channels.begin(), net->window->channels.end(), end->hand->channel)
                 == net->window->channels.end())
                 continue;
@@ -831,7 +854,9 @@ void testRepairsByHand()
     }
     raiseHands(all);
     CHECK_EQ(a.seals.handsHeard(), (size_t)1);
-    for (int i = 0; i < 40; i++)
+    // The round goes a listening window after the Hands, for the requests
+    // by burst that wait for them.
+    for (int i = 0; i < 90; i++)
     {
         now += 1000;
         step(all);
@@ -935,6 +960,97 @@ void testHandWindowOutlastsListening()
     std::filesystem::remove_all(dir);
 }
 
+// A station that can't answer a seal's round by Hand (here it lacks an
+// earlier seal, which a Hand can't name) asks by burst: not over the
+// Hands, but after their window, in a listening window there; and the
+// seal's sender is still listening then.
+void testRequestWaitsForHands()
+{
+    End a("W1AW", "FN31", 9.0);
+    End b("KC2G", "FN20", -6.0);
+    End c("K7MHI", "CN85", -3.0);
+    a.seals.setSealText(true);
+    a.withFiles();
+    b.withFiles();
+    c.withFiles();
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "ragtime-roll-call-test-2";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir / "voice");
+    b.files->setAutoVoice((dir / "voice").string(), 64 * 1024);
+    // C never hears A's first seal, so A's second names one it lacks.
+    c.lose = [](const protocol::Record& r) {
+        const protocol::Seal* s = r.as<protocol::Seal>();
+        return s != nullptr && r.header.callsign == "W1AW" && s->number == 1;
+    };
+    std::vector<End*> all{&a, &b, &c};
+    up(all);
+    CHECK(!b.chat.send("Evening all", "", now).empty());    // A's host shows Hands with it
+    settle(all);
+    CHECK(!a.chat.send("A line for the net", "", now).empty());
+    for (int i = 0; i < 90; i++)
+    {
+        now += 1000;
+        step(all);
+    }
+    CHECK(a.seals.sealsSent() >= 1);
+    raiseHands(all);    // the first seal's window, with no Hands
+    settle(all);
+
+    // B loses one piece of the clip the first time it goes, so it answers
+    // the round by Hand.
+    auto lost = std::make_shared<bool>(false);
+    b.lose = [lost](const protocol::Record& r) {
+        const protocol::FilePiece* p = r.as<protocol::FilePiece>();
+        if (p == nullptr || p->index != 1 || *lost) return false;
+        *lost = true;
+        return true;
+    };
+    std::filesystem::path clip = dir / "hello.sot";
+    {
+        std::ofstream out(clip, std::ios::binary);
+        for (int i = 0; i < 900; i++) out.put((char)(i * 37 + 11));
+    }
+    std::string error;
+    CHECK(a.files->send(clip.string(), "qpsk-r1/3", now, error, false, true) != 0);
+    size_t cRequests = c.seals.requestsSent();
+    for (int i = 0; i < 120 && !b.hand; i++)
+    {
+        now += 500;
+        step(all);
+    }
+    CHECK(b.hand.has_value());
+    CHECK(a.window.has_value() && a.window->open);
+    uint64_t opened = a.window ? a.window->openMs : now;
+    uint64_t slotEnds = opened + (uint64_t)((3.0 + link::HAND_SECONDS + link::HAND_SEARCH_S) * 1000.0);
+    while (now + 500 <= slotEnds + 400)
+    {
+        now += 500;
+        step(all);
+    }
+    // C kept quiet over the Hands, so B's came through.
+    CHECK_EQ(c.seals.requestsSent(), cRequests);
+    raiseHands(all, false);
+    CHECK_EQ(a.seals.handsHeard(), (size_t)1);
+    size_t heardBefore = a.seals.requestsHeard();
+    for (int i = 0; i < 120; i++)
+    {
+        now += 500;
+        step(all);
+    }
+    // C asked after the window, and A took it into the round.
+    CHECK(c.seals.requestsSent() > cRequests);
+    CHECK(a.seals.requestsHeard() > heardBefore);
+    for (const Keyed& k : keyed)
+    {
+        if (k.by == &c && k.atMs > opened) CHECK(k.atMs >= slotEnds);
+    }
+    bool saved = false;
+    for (const broadcast::BroadcastFile& f : b.files->files(now))
+        saved = saved || (!f.outgoing && f.state == broadcast::BroadcastFile::State::Saved);
+    CHECK(saved);
+    std::filesystem::remove_all(dir);
+}
+
 void testRepairHandPayload()
 {
     protocol::RepairHand hand;
@@ -994,5 +1110,6 @@ int main()
     testRepairHandPayload();
     testRepairsByHand();
     testHandWindowOutlastsListening();
+    testRequestWaitsForHands();
     return ragtime_test::finish();
 }

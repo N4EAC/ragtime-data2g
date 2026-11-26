@@ -15,8 +15,8 @@
 // it lists.
 //
 // After a seal goes, a listening window (3 one-codeword bursts in its
-// mode, plus 4 s; a seal with a Hand window, at least until that window
-// is over). The requests heard in it are joined and answered with
+// mode, plus 4 s; a seal with a Hand window, until that window is over
+// and a listening window more, for the requests that wait for it). The requests heard in it are joined and answered with
 // parity (docs/PROTOCOL.md, "Parity"): each request says what its asker
 // lacks and how many repair symbols it wants (more than it lacks, for what
 // it expects to lose), and one parity symbol fills a different gap for
@@ -43,7 +43,9 @@
 // MAX_OPEN_MS. When a station's seal comes, what we lack under it (and
 // under its other recent seals, and a missing previous seal) is asked for
 // in one RepairRequest a seal, at a random time within the window, with
-// the mean S/N of the station's last few bursts, and a want for
+// the mean S/N of the station's last few bursts (never while a Hand
+// window heard of is open: after it, at a random time within a window),
+// and a want for
 // each lack sized by the share we lost of the last round (or of the first
 // pass). A request heard from another station first speaks for ours when
 // its asker's gear is no faster than ours and it wants at least as much
@@ -674,6 +676,18 @@ private:
     // The host hasn't ended the window of our round's burst yet, as long
     // as an end could still come (HAND_DECODE_MAX_S past its span).
     bool handWindowOpen(uint64_t nowMs) const;
+    // Our round's Hand window is over (HAND END, or lost): the requests by
+    // burst, which wait for it, come in one listening window after it.
+    void handRoundOver(uint64_t nowMs);
+    // Theirs: a Hand window heard of (a SealRound or a roll call from
+    // another station) runs until then. A request burst of ours would key
+    // over the Hands in it, which no host holds for (they have no
+    // header), so it waits, then picks its moment in a listening window.
+    uint64_t handsQuietUntilMs_ = 0;
+    void heardHandWindow(uint8_t delayTenths, uint64_t nowMs);
+    // The random wait before a request: within a listening window in our
+    // mode, less our request's airtime and the turn round.
+    uint64_t askSpreadMs() const;
     size_t handsHeard_ = 0;
     // Theirs: the reference of the burst whose records come next, and our
     // repair Hand waiting to go, with what it asks for (counted as asked
