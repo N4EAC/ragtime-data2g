@@ -57,11 +57,22 @@ std::string describe(const RigFilter& filter)
         char text[32];
         if (filter.notchRaw)
             std::snprintf(text, sizeof text, "notch %.2f", *filter.notchRaw);
+        else if (filter.notchHz)
+            std::snprintf(text, sizeof text, "notch %d Hz", *filter.notchHz);
         else
             std::snprintf(text, sizeof text, "notch on");
         out += (out.empty() ? "" : dot) + std::string(text);
     }
     return out;
+}
+
+std::string notchText(const RigFilter& filter)
+{
+    if (!filter.notchOn) return std::string();
+    if (!*filter.notchOn) return "NF off";
+    if (filter.notchRaw) return "NF " + pbtText(*filter.notchRaw);
+    if (filter.notchHz) return "NF " + std::to_string(*filter.notchHz) + " Hz";
+    return "NF on";
 }
 
 } // namespace radio

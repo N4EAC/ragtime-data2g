@@ -10,7 +10,8 @@
 //   ragtime_fake_air [--bots N] [--airtime MS] [--call CALL] [--fade] [--rate BPS]
 //                    [--loss PCT] [--files] [--voice] [--voice-file FILE.sot] [--no-snr] [--no-cut]
 //                    [--no-reasons] [--no-hands] [--lose-headers PCT]
-//                    [--rig PORT [--dial HZ] [--dial-hop] [--rig-vfo] [--rig-swr X] [--rig-noise DB]]
+//                    [--rig PORT [--dial HZ] [--dial-hop] [--rig-vfo] [--rig-yaesu] [--rig-swr X]
+//                     [--rig-noise DB]]
 //   ragtime_fake_air --replay FILE|FOLDER... [--from TIME] [--speed X]
 //
 // --call CALL has the first bot that takes sessions call CALL half a
@@ -72,6 +73,9 @@
 // prints anything else it is sent (Ragtime should only ever ask those).
 // --rig-vfo plays one started with --vfo: \chk_vfo is 1, and it answers
 // "f currVFO" and "+l currVFO ALC", but not a bare "f".
+// --rig-yaesu plays a Yaesu (an FT-891, say): no PBT and no NOTCHF_RAW,
+// the notch's centre in Hz instead, "+l NOTCHF" (1500 at first), set with
+// "L NOTCHF 1200".
 // --dial-hop moves the dial to 14.250 MHz, outside the US data segments,
 // for one minute in every three, so receive only shows.
 //
@@ -182,15 +186,17 @@ void readSome(int fd, std::vector<uint8_t>& out)
 // A rigctld that knows the questions Ragtime asks: "\chk_vfo", "f", the
 // dial frequency ("f currVFO" when it plays --vfo), the levels and "+m";
 // and takes the Ear's filter settings, "M", "L PBT_IN", "L PBT_OUT",
-// "U MN" and "L NOTCHF_RAW", and a tune, "F".
+// "U MN" and "L NOTCHF_RAW" ("L NOTCHF" as a Yaesu), and a tune, "F".
 class FakeRig
 {
 public:
     // drive: the TX level of the host that keys this rig, dB.
-    FakeRig(int port, uint64_t dialHz, bool hop, bool vfo, double swr, int noise, std::function<double()> drive)
+    FakeRig(int port, uint64_t dialHz, bool hop, bool vfo, bool yaesu, double swr, int noise,
+            std::function<double()> drive)
         : dialHz_(dialHz)
         , hop_(hop)
         , vfo_(vfo)
+        , yaesu_(yaesu)
         , swr_(swr)
         , noise_(noise)
         , drive_(std::move(drive))
@@ -247,10 +253,12 @@ public:
                         std::snprintf(value, sizeof value, "%.6f\n", swr_);
                     else if (level == "RFPOWER_METER_WATTS")
                         std::snprintf(value, sizeof value, "%.6f\n", 38.0);
-                    else if (level == "PBT_IN" || level == "PBT_OUT")
+                    else if ((level == "PBT_IN" || level == "PBT_OUT") && !yaesu_)
                         std::snprintf(value, sizeof value, "%.6f\n", level == "PBT_IN" ? pbtIn_ : pbtOut_);
-                    else if (level == "NOTCHF_RAW")
+                    else if (level == "NOTCHF_RAW" && !yaesu_)
                         std::snprintf(value, sizeof value, "%.6f\n", notchRaw_);
+                    else if (level == "NOTCHF" && yaesu_)
+                        std::snprintf(value, sizeof value, "%d\n", notchHz_);
                     else if (level == "STRENGTH")
                         std::snprintf(value, sizeof value, "%d\n",
                                       ++strengths_ % 6 == 0 ? -10 : noise_ + (int)(nowMs / 5000 % 4));
@@ -325,13 +333,21 @@ private:
         }
         std::string level;
         double v = 0;
-        if ((command != "L" && command != "U") || !(in >> level >> v) || v < 0 || v > 1) return false;
+        if ((command != "L" && command != "U") || !(in >> level >> v) || v < 0) return false;
+        if (level == "NOTCHF" && yaesu_ && command == "L")
+        {
+            // A Yaesu's 10 Hz steps, 10 to 3200 Hz.
+            notchHz_ = std::max(10, std::min(3200, (int)std::lround(v / 10) * 10));
+            return true;
+        }
+        if (v > 1) return false;
         if (command == "U")
         {
             if (level != "MN") return false;
             notchOn_ = v != 0;
             return true;
         }
+        if (yaesu_) return false;
         if (level == "PBT_IN") pbtIn_ = v;
         else if (level == "PBT_OUT") pbtOut_ = v;
         else if (level == "NOTCHF_RAW") notchRaw_ = v;
@@ -345,10 +361,12 @@ private:
     double pbtOut_ = 0.5;
     bool notchOn_ = false;
     double notchRaw_ = 0.5;
+    int notchHz_ = 1500;
     int listener_ = -1;
     uint64_t dialHz_;
     bool hop_;
     bool vfo_;
+    bool yaesu_;
     double swr_;
     int noise_;
     std::function<double()> drive_;
@@ -857,6 +875,7 @@ int main(int argc, char** argv)
     uint64_t dialHz = 14105000;
     bool dialHop = false;
     bool rigVfo = false;
+    bool rigYaesu = false;
     double rigSwr = 1.3;
     int rigNoise = -40;
     std::vector<std::string> replayPaths;
@@ -899,6 +918,8 @@ int main(int argc, char** argv)
             dialHop = true;
         else if (std::strcmp(argv[i], "--rig-vfo") == 0)
             rigVfo = true;
+        else if (std::strcmp(argv[i], "--rig-yaesu") == 0)
+            rigYaesu = true;
         else if (std::strcmp(argv[i], "--rig-swr") == 0 && i + 1 < argc)
             rigSwr = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--rig-noise") == 0 && i + 1 < argc)
@@ -917,7 +938,8 @@ int main(int argc, char** argv)
             std::fprintf(stderr, "usage: ragtime_fake_air [--bots N] [--airtime MS] [--call CALL] [--fade] "
                                  "[--rate BPS] [--loss PCT] [--files] [--voice] [--voice-file FILE.sot] "
                                  "[--no-snr] [--no-cut] [--no-reasons] [--no-hands] [--lose-headers PCT] "
-                                 "[--rig PORT [--dial HZ] [--dial-hop] [--rig-vfo] [--rig-swr X] [--rig-noise DB]]\n"
+                                 "[--rig PORT [--dial HZ] [--dial-hop] [--rig-vfo] [--rig-yaesu] [--rig-swr X] "
+                                 "[--rig-noise DB]]\n"
                                  "       ragtime_fake_air --replay FILE|FOLDER... [--from 2026-10-25T16:20] "
                                  "[--speed X]\n");
             return 2;
@@ -938,7 +960,7 @@ int main(int argc, char** argv)
     {
         a = std::make_unique<FakeHost>(air, 2, 8100, 8300);
         b = std::make_unique<FakeHost>(air, 2, 8110, 8310);
-        if (rigPort > 0) rig = std::make_unique<FakeRig>(rigPort, dialHz, dialHop, rigVfo, rigSwr, rigNoise,
+        if (rigPort > 0) rig = std::make_unique<FakeRig>(rigPort, dialHz, dialHop, rigVfo, rigYaesu, rigSwr, rigNoise,
                                                         [&a]() { return a->txPowerDb(); });
     }
     catch (const std::exception& e)
@@ -1005,7 +1027,8 @@ int main(int argc, char** argv)
                 "%d bot station%s on the air. Ctrl-C to stop.\n",
                 bots, bots == 1 ? "" : "s");
     if (rig)
-        std::printf("A rigctld%s on 127.0.0.1:%d, the dial at %llu Hz%s.\n", rigVfo ? " with --vfo" : "", rigPort,
+        std::printf("A rigctld%s%s on 127.0.0.1:%d, the dial at %llu Hz%s.\n", rigYaesu ? " playing a Yaesu" : "",
+                    rigVfo ? " with --vfo" : "", rigPort,
                     (unsigned long long)dialHz, dialHop ? " (14.250 MHz one minute in three)" : "");
     std::fflush(stdout);
     while (!stopping)

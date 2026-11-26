@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <locale>
 #include <sstream>
 
@@ -91,6 +92,13 @@ std::optional<NotchModel> NotchModel::fromText(const std::string& text)
     return m;
 }
 
+std::optional<double> notchCentre(const RigFilter& f, const NotchModel& m)
+{
+    if (f.notchHz) return (double)*f.notchHz;
+    if (f.notchRaw) return m.hzOf(*f.notchRaw);
+    return std::nullopt;
+}
+
 bool notchCutsData2G(double hz, bool narrow)
 {
     const Passband p = data2gPassband(narrow);
@@ -102,9 +110,10 @@ std::string notchChangeText(const RigFilter& from, const RigFilter& to, const No
     const bool was = from.notchOn && *from.notchOn, is = to.notchOn && *to.notchOn;
     if (!was && !is) return std::string();
     if (!is) return "Notch off";
-    const int at = to.notchRaw ? tens(m.hzOf(*to.notchRaw)) : 0;
-    if (!was) return "Notch on at " + std::to_string(at) + " Hz";
-    const int before = from.notchRaw ? tens(m.hzOf(*from.notchRaw)) : 0;
+    const std::optional<double> toHz = notchCentre(to, m), fromHz = notchCentre(from, m);
+    if (!was) return toHz ? "Notch on at " + std::to_string(tens(*toHz)) + " Hz" : std::string("Notch on");
+    if (!toHz || !fromHz) return std::string();
+    const int at = tens(*toHz), before = tens(*fromHz);
     if (before == at) return std::string();
     return "Notch " + std::to_string(before) + ARROW + std::to_string(at) + " Hz";
 }
@@ -113,7 +122,10 @@ RigFilter withNotch(const RigFilter& now, std::optional<double> hz, const NotchM
 {
     RigFilter out = now;
     out.notchOn = hz.has_value();
-    if (hz) out.notchRaw = m.rawFor(*hz);
+    if (hz && now.notchHz && !now.notchRaw)
+        out.notchHz = std::max(10, tens(*hz));
+    else if (hz)
+        out.notchRaw = m.rawFor(*hz);
     return out;
 }
 
@@ -294,7 +306,9 @@ bool holds(const RigFilter& rig, const RigFilter& preset)
     if (!preset.notchOn) return true;
     const bool on = rig.notchOn && *rig.notchOn;
     if (on != *preset.notchOn) return false;
-    return !on || near(rig.notchRaw, preset.notchRaw);
+    if (!on) return true;
+    if (preset.notchHz) return rig.notchHz && std::abs(*rig.notchHz - *preset.notchHz) <= 15;
+    return near(rig.notchRaw, preset.notchRaw);
 }
 
 bool cutsData2G(const Span& span, bool narrow)

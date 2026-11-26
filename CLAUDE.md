@@ -216,9 +216,10 @@ into the APK, so rebuild it after changing them.
   the gearshift's QRN line), and while the Ear or the gearshift is
   open the filter
   (`+m`, `+l PBT_IN`, `+l PBT_OUT`, `+u MN`, `+l NOTCHF_RAW`, Jeff's
-  OK 2026-10-26), naming
+  OK 2026-10-26; `+l NOTCHF` from a rig with no NOTCHF_RAW, a Yaesu or
+  a Kenwood, since 2026-11-26), naming
   `currVFO` for a `--vfo` one, and sets only the Ear's filter (`M`,
-  `L PBT_IN`, `L PBT_OUT`, `L NOTCHF_RAW`, `U MN`, each only when it
+  `L PBT_IN`, `L PBT_OUT`, `L NOTCHF_RAW` or `L NOTCHF`, `U MN`, each only when it
   differs, with its box ticked) and a frequency the operator picks
   (`F`); `Bands`, the US data segments, and 60 m's channels (the dial exactly 1.5 kHz below a channel's centre, Jeff 2026-10-27) and band segment; `PathLog`, a line a
   burst heard, appended, and each station's 24-hour strip by band),
@@ -549,7 +550,8 @@ into the APK, so rebuild it after changing them.
   sets the receive filter's width, PBT and manual notch, never while
   data2g-host transmits,
   through Hamlib or rigctld (`M`, `L PBT_IN`, `L PBT_OUT`,
-  `L NOTCHF_RAW` and `U MN`, Jeff's OK 2026-10-26); it and a picked
+  `L NOTCHF_RAW` and `U MN`, Jeff's OK 2026-10-26; `L NOTCHF`, the
+  notch in Hz, for a Yaesu or a Kenwood, which has no NOTCHF_RAW); it and a picked
   frequency are the only set commands Ragtime ever sends rigctld. It
   never keys through rigctld (NET rigctl is left out of the Hamlib
   list).
@@ -653,7 +655,9 @@ PR #98; `--lose-headers PCT` loses that share of the burst headers
 hosts A and B hear, so the HEARD line names no call and the SNR comes
 on the frames' Hand reference. `--rig PORT` plays a rigctld for the dial (14.105 MHz, or
 `--dial HZ`; `--dial-hop` moves it outside the data segments one minute
-in three; `--rig-vfo` plays a rigctld started with `--vfo`; it answers
+in three; `--rig-vfo` plays a rigctld started with `--vfo`;
+`--rig-yaesu` plays a Yaesu, with no PBT and the notch in Hz (`+l
+NOTCHF`, `L NOTCHF`) instead of NOTCHF_RAW; it answers
 the meters too, its SWR 1.3 or `--rig-swr X`, an ALC that follows host
 A's `TXPOWER` for Auto ALC, and the S-meter, -40 dB over S9 or
 `--rig-noise DB`) and prints anything it is

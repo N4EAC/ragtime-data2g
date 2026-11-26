@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -547,7 +548,9 @@ void HamlibRig::run()
     bool readsPbtOut = false;
     bool readsNotch = false;
     bool readsNotchRaw = false;
+    bool readsNotchHz = false;
     int modeFailures = 0;
+    int notchFailures = 0;
     uint64_t nextFilter = 0;
     radio::SwrTrip trip;
     bool swrTurn = true;
@@ -641,6 +644,22 @@ void HamlibRig::run()
         };
         notch(false);
         knob(RIG_LEVEL_NOTCHF_RAW, f.notchRaw, "NOTCHF_RAW");
+        // A Yaesu's or a Kenwood's notch, in Hz (an FT-891 has no
+        // NOTCHF_RAW, and moves in 10 Hz steps).
+        if (f.notchHz && rig_has_set_level(rig, RIG_LEVEL_NOTCHF) != 0)
+        {
+            value_t now;
+            const bool same = rig_has_get_level(rig, RIG_LEVEL_NOTCHF) != 0 &&
+                              rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_NOTCHF, &now) == RIG_OK &&
+                              std::abs(now.i - *f.notchHz) < 10;
+            if (!same)
+            {
+                value_t value;
+                value.i = *f.notchHz;
+                int k = rig_set_level(rig, RIG_VFO_CURR, RIG_LEVEL_NOTCHF, value);
+                if (k != RIG_OK && problem.empty()) problem = "Setting NOTCHF failed: " + errorText(k);
+            }
+        }
         notch(true);
         shared->update([&](Status& s) {
             s.filterWrites++;
@@ -789,7 +808,10 @@ void HamlibRig::run()
                     readsPbtOut = rig_has_get_level(rig, RIG_LEVEL_PBT_OUT) != 0;
                     readsNotch = rig_has_get_func(rig, RIG_FUNC_MN) != 0;
                     readsNotchRaw = rig_has_get_level(rig, RIG_LEVEL_NOTCHF_RAW) != 0;
+                    // Only where there is no position: an Icom's is NOTCHF_RAW.
+                    readsNotchHz = !readsNotchRaw && rig_has_get_level(rig, RIG_LEVEL_NOTCHF) != 0;
                     modeFailures = 0;
+                    notchFailures = 0;
                     nextFilter = 0;
                     std::string name = std::string(rig->caps->mfg_name) + " " + rig->caps->model_name;
                     shared->update([&](Status& s) {
@@ -948,20 +970,48 @@ void HamlibRig::run()
             };
             filter.pbtIn = pbt(RIG_LEVEL_PBT_IN, readsPbtIn);
             filter.pbtOut = pbt(RIG_LEVEL_PBT_OUT, readsPbtOut);
+            bool keepNotch = false, keepHz = false;
             if (readsNotch)
             {
                 int on = 0;
-                if (rig_get_func(rig, RIG_VFO_CURR, RIG_FUNC_MN, &on) == RIG_OK)
+                int r = rig_get_func(rig, RIG_VFO_CURR, RIG_FUNC_MN, &on);
+                if (r == RIG_OK)
                 {
+                    notchFailures = 0;
                     filter.notchOn = on != 0;
                     filter.notchRaw = pbt(RIG_LEVEL_NOTCHF_RAW, readsNotchRaw);
+                    if (readsNotchHz)
+                    {
+                        value_t hz;
+                        hz.i = 0;
+                        if (rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_NOTCHF, &hz) == RIG_OK && hz.i > 0)
+                            filter.notchHz = hz.i;
+                        else
+                            keepHz = true;
+                    }
                 }
-                else
+                // A slow answer now and then is no reason to stop asking.
+                else if (r == -RIG_ENIMPL || r == -RIG_ENAVAIL || ++notchFailures >= 3)
                 {
                     readsNotch = false;
                 }
+                else
+                {
+                    keepNotch = true;
+                }
             }
             std::lock_guard<std::mutex> lock(shared->mutex);
+            if (keepNotch && shared->status.filter)
+            {
+                // The notch as last read, rather than none for a moment.
+                filter.notchOn = shared->status.filter->notchOn;
+                filter.notchRaw = shared->status.filter->notchRaw;
+                filter.notchHz = shared->status.filter->notchHz;
+            }
+            else if (keepHz && shared->status.filter)
+            {
+                filter.notchHz = shared->status.filter->notchHz;
+            }
             std::optional<radio::RigFilter> got = filter.mode.empty() && !filter.pbtIn && !filter.pbtOut
                                                       ? std::nullopt
                                                       : std::optional<radio::RigFilter>(filter);
@@ -976,7 +1026,7 @@ void HamlibRig::run()
         uint64_t until = rig == nullptr ? now + 250 : !tx ? nextPoll : meters.empty() ? now + 1000 : nextMeterMs;
         if (rig != nullptr && !tx && readsStrength)
             until = std::min(until, std::max(nextStrength, unkeyedMs + radio::NoiseFloor::SETTLE_MS));
-        if (rig != nullptr && !tx && filterWatch && (readsMode || readsPbtIn || readsPbtOut))
+        if (rig != nullptr && !tx && filterWatch && (readsMode || readsPbtIn || readsPbtOut || readsNotch))
             until = std::min(until, nextFilter);
         std::unique_lock<std::mutex> lock(shared->mutex);
         shared->wake.wait_for(lock, std::chrono::milliseconds(until > now ? until - now : 1), [&]() {

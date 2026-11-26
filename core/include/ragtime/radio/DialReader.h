@@ -98,8 +98,9 @@ public:
         PbtOut,
         NotchOn,    // the manual notch (the MN function, "+u"), and
         NotchRaw,   // NOTCHF_RAW, its position: also only while the Ear is open
+        NotchHz,    // NOTCHF, its centre in Hz, from a rig with no NOTCHF_RAW
     };
-    static constexpr int METERS = 9;
+    static constexpr int METERS = 10;
     // Probed on connecting: all but the filter's.
     static constexpr int PROBED = 5;
 
