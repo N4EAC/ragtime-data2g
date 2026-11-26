@@ -1006,6 +1006,23 @@ void testHistoryByPages()
     CHECK(ordered);
     rig.chat.holdHistory(false);
     CHECK(rows.size() <= SessionChat::MAX_MESSAGES);
+
+    // Opened afresh, a line from the first session is found by loading
+    // pages through it; one that isn't there loads them all.
+    Rig again;
+    again.chat.setLog(&log);
+    Far far2("W1AW");
+    connect(again, far2);
+    const auto& rows2 = again.chat.messages();
+    CHECK_EQ(rows2.size(), SessionChat::HISTORY_PAGE);
+    uint64_t firstMs = rows.front().atMs;
+    size_t found = again.chat.loadThrough([&](const session::Message& m) { return m.atMs == firstMs; });
+    CHECK(found != SessionChat::NOT_FOUND);
+    CHECK(found < rows2.size() && rows2[found].text == "said 1");
+    CHECK(again.chat.loadThrough([](const session::Message& m) { return m.text == "never said"; })
+          == SessionChat::NOT_FOUND);
+    CHECK_EQ(rows2.size(), all);
+    again.chat.holdHistory(false);
     std::filesystem::remove_all(dir, ec);
 }
 

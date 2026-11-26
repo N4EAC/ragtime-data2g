@@ -1698,6 +1698,20 @@ size_t BroadcastChat::loadOlder()
     return page.size();
 }
 
+size_t BroadcastChat::loadThrough(const std::function<bool(const Message&)>& match)
+{
+    for (size_t i = messages_.size(); i-- > 0;)
+        if (match(messages_[i])) return i;
+    for (;;)
+    {
+        holdHistory(true);
+        size_t came = loadOlder();
+        if (came == 0) return NOT_FOUND;
+        for (size_t i = came; i-- > 0;)
+            if (match(messages_[i])) return i;
+    }
+}
+
 void BroadcastChat::holdHistory(bool hold)
 {
     if (hold == holdingHistory_) return;

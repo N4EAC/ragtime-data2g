@@ -1638,17 +1638,14 @@ void MainFrame::reviewSession(const std::string& call)
         if (session_.peer() == them) tabs_->SetSelection(TAB_SESSION);
         return;
     }
-    std::vector<session::Message> kept = sessionLog_.load(them, session::SessionChat::MAX_MESSAGES);
-    if (kept.empty())
+    const int tabBefore = sessionPage_->reviewing().empty() ? tabs_->GetSelection() : tabBeforeReview_;
+    // Never ragchewed with: nothing to show, and the tab left as it was.
+    if (!sessionPage_->review(them, sessionLog_.history(them)))
     {
-        // Never ragchewed with: nothing to show, and the tab left as it was.
         endReview();
         return;
     }
-    uint64_t id = 1;
-    for (session::Message& m : kept) m.id = id++;
-    if (sessionPage_->reviewing().empty()) tabBeforeReview_ = tabs_->GetSelection();
-    sessionPage_->review(them, std::move(kept));
+    tabBeforeReview_ = tabBefore;
     tabs_->SetSelection(TAB_SESSION);
     updateTabLabels();
 }

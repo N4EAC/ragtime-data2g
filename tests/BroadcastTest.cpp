@@ -485,6 +485,27 @@ void testHistoryByPages()
     CHECK(inOrder(rows));
     CHECK_EQ(rows.front().text, std::string("line 1"));
     a.chat.holdHistory(false);
+
+    // A row far back, found by its sender, number and time: pages come in
+    // front until it is there, held while the operator looks at it.
+    CHECK(rows.size() <= broadcast::MAX_MESSAGES);
+    auto lineNumbered = [](uint32_t seq) {
+        return [seq](const Message& m) { return m.kind == Message::Kind::Text && m.from == "W1AW" && m.seq == seq; };
+    };
+    size_t at = a.chat.loadThrough(lineNumbered(7));
+    CHECK(at != BroadcastChat::NOT_FOUND);
+    CHECK(at < rows.size() && rows[at].seq == 7);
+    CHECK(inOrder(rows));
+    // Shown already: found where it is, with nothing loaded.
+    size_t count = rows.size();
+    size_t later = a.chat.loadThrough(lineNumbered(2000));
+    CHECK(later > at && later < rows.size() && rows[later].seq == 2000);
+    CHECK_EQ(rows.size(), count);
+    // Not in the history: every page comes, and it isn't found.
+    CHECK(a.chat.loadThrough(lineNumbered(99999)) == BroadcastChat::NOT_FOUND);
+    CHECK_EQ(rows.size(), all);
+    CHECK(!a.chat.olderInLog());
+    a.chat.holdHistory(false);
     std::filesystem::remove_all(dir, ec);
 }
 

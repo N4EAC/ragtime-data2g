@@ -45,6 +45,7 @@
 #define RAGTIME_SESSION_SESSION_CHAT_H
 
 #include <cstddef>
+#include <functional>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -336,6 +337,15 @@ public:
     // While held, no old row is dropped: the operator is reading up there.
     // Let go, the tab goes back to MAX_MESSAGES rows.
     void holdHistory(bool hold);
+    // Pages of the log's history put in front, as loadOlder() does, until
+    // a row match() takes is in messages(): its index there, the newest
+    // such row (rows already shown are looked at first), or NOT_FOUND
+    // when the history ends first. Loading holds the history
+    // (holdHistory(true)), so the row stays until the tab lets go.
+    // Match on the row's atMs, from and seq: they are the same in every
+    // file of the history.
+    size_t loadThrough(const std::function<bool(const Message&)>& match);
+    static constexpr size_t NOT_FOUND = static_cast<size_t>(-1);
 
     //---------------------------------------------------------------------
     // The operator

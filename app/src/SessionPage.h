@@ -13,6 +13,7 @@
 
 #include "FrontWindow.h"
 #include "ragtime/files/FileTraffic.h"
+#include "ragtime/history/History.h"
 #include "ragtime/session/SessionChat.h"
 
 class wxBoxSizer;
@@ -136,8 +137,10 @@ public:
     void focusCompose();
 
     // The earlier ragchews with call, read only, in place of the session's
-    // messages until endReview, or until a session starts.
-    void review(const std::string& call, std::vector<ragtime::session::Message> messages);
+    // messages until endReview, or until a session starts: the newest page
+    // of its log's history, and the page before each time the list is
+    // scrolled near its top. False, and no review, when it has none.
+    bool review(const std::string& call, ragtime::history::Pages<ragtime::session::Message> pages);
     void endReview();
     // The station under review, or "" when none is.
     const std::string& reviewing() const { return reviewCall_; }
@@ -163,6 +166,8 @@ private:
     }
     const std::string& shownPeer() const { return reviewCall_.empty() ? session_.peer() : reviewCall_; }
 
+    // The review's next page back, put in front: how many rows came.
+    size_t reviewOlder();
     void send();
     void showMenu(int row);
     void rebuild(uint64_t nowMs);
@@ -192,6 +197,8 @@ private:
     std::string shownWords_;
     std::string reviewCall_;        // the station under review, or ""
     std::deque<ragtime::session::Message> review_;
+    ragtime::history::Pages<ragtime::session::Message> reviewPages_;  // the review's rows not yet shown
+    uint64_t reviewId_ = 0;         // the last id a review's row was given
     std::string shownReview_;
     wxButton* send_ = nullptr;
     wxButton* sendFile_ = nullptr;
