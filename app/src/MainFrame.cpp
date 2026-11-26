@@ -1777,20 +1777,13 @@ void MainFrame::jumpToHit(const search::Hit& hit)
 
     if (hit.place == search::Place::Broadcast)
     {
-        const auto& all = chat_.messages();
-        size_t row = all.size();
-        for (size_t i = all.size(); i-- > 0;)
+        // Paged in from the history if it is that far back.
+        size_t row = chat_.loadThrough([&hit](const broadcast::Message& m) {
+            return m.atMs == hit.atMs && m.from == hit.from && m.seq == hit.seq;
+        });
+        if (row == broadcast::BroadcastChat::NOT_FOUND)
         {
-            const broadcast::Message& m = all[i];
-            if (m.atMs == hit.atMs && m.from == hit.from && m.seq == hit.seq)
-            {
-                row = i;
-                break;
-            }
-        }
-        if (row == all.size())
-        {
-            searchPage_->setNote("That line is older than the Broadcast tab holds now.");
+            searchPage_->setNote("That line isn't in the Broadcast log any more.");
             return;
         }
         searchPage_->setNote(wxString());
@@ -1811,12 +1804,15 @@ void MainFrame::jumpToHit(const search::Hit& hit)
         return;
     }
     if (!session_.active() && sessionPage_->reviewing() != peer) reviewSession(peer);
-    size_t index = sessionPage_->findShown([&hit](const session::Message& m) {
+    auto match = [&hit](const session::Message& m) {
         return m.atMs == hit.atMs && m.from == hit.from && m.seq == hit.seq;
-    });
+    };
+    // The live session's history paged in, or the review's.
+    if (session_.active()) session_.loadThrough(match);
+    size_t index = sessionPage_->findThrough(match);
     if (index == SessionPage::NOT_SHOWN)
     {
-        searchPage_->setNote("That line is older than the Session tab holds now.");
+        searchPage_->setNote("That line isn't in the ragchew's log any more.");
         return;
     }
     searchPage_->setNote(wxString());

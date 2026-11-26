@@ -150,10 +150,13 @@ public:
 
     // For a jump from the Search tab: the index among the messages shown
     // (the session's, or the review's) of the newest that match accepts,
-    // or NOT_SHOWN; that message picked and in view; and the strip over
-    // the lines that goes with it.
+    // or NOT_SHOWN; findThrough pages a review back through its history
+    // until one does (a live session's is paged by SessionChat::loadThrough
+    // first); that message picked and in view, the list no longer
+    // following the newest; and the strip over the lines that goes with it.
     static constexpr size_t NOT_SHOWN = ~(size_t)0;
     size_t findShown(const std::function<bool(const ragtime::session::Message&)>& match) const;
+    size_t findThrough(const std::function<bool(const ragtime::session::Message&)>& match);
     void showMessage(size_t index);
     FindStrip* findStrip() { return find_; }
 

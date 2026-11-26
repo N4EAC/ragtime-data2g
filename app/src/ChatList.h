@@ -71,6 +71,10 @@ public:
     // Keeps the newest row in view from the next showRows: other rows in
     // place of these, where reading from the old place means nothing.
     void followNewest() { following_ = true; }
+    // Stops keeping the newest row in view, as scrolling up does: for a
+    // row picked far back (a jump from the Search tab), so the rows above
+    // it stay held.
+    void stopFollowing() { following_ = false; }
 
     // Every scroll comes through here, with the new top row already set
     // and before the scroll bar is told: a scroll that wasn't ours is the

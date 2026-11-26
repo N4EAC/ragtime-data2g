@@ -15,6 +15,7 @@
 
 #include "ragtime/broadcast/BroadcastLog.h"
 #include "ragtime/files/SessionFiles.h"
+#include "ragtime/history/History.h"
 #include "ragtime/session/SessionLog.h"
 
 namespace ragtime
@@ -106,27 +107,12 @@ int64_t modified(const std::filesystem::path& path)
     return (int64_t)t.time_since_epoch().count();
 }
 
-// The rolled files in a history folder, newest first: they are named for
-// the time their first run began (YYYYMMDD-HHMMSS.log), so by name.
-std::vector<std::filesystem::path> rolled(const std::filesystem::path& folder)
+// A log's rolled files, newest first.
+std::vector<std::string> rolledNewestFirst(const std::string& logPath)
 {
-    std::vector<std::filesystem::path> files;
-    std::error_code ec;
-    if (!std::filesystem::is_directory(folder, ec)) return files;
-    for (const auto& entry : std::filesystem::directory_iterator(folder, ec))
-    {
-        if (entry.path().extension() == ".log" && entry.is_regular_file(ec)) files.push_back(entry.path());
-    }
-    std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.filename() > b.filename(); });
+    std::vector<std::string> files = history::rolledLogs(logPath);
+    std::reverse(files.begin(), files.end());
     return files;
-}
-
-std::filesystem::path historyFolderOf(const std::filesystem::path& log)
-{
-    std::filesystem::path folder = log.parent_path();
-    std::string stem = files::utf8FromPath(log.filename());
-    if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".log") == 0) stem.resize(stem.size() - 4);
-    return folder / files::pathFromUtf8(stem + "-history");
 }
 
 } // namespace
@@ -219,8 +205,7 @@ std::vector<Source> historySources(const std::string& broadcastLogPath, const st
     {
         std::filesystem::path log = files::pathFromUtf8(broadcastLogPath);
         if (std::filesystem::is_regular_file(log, ec)) sources.push_back({Place::Broadcast, "", broadcastLogPath});
-        for (const auto& f : rolled(historyFolderOf(log)))
-            sources.push_back({Place::Broadcast, "", files::utf8FromPath(f)});
+        for (const std::string& f : rolledNewestFirst(broadcastLogPath)) sources.push_back({Place::Broadcast, "", f});
     }
     if (!sessionFolder.empty())
     {
@@ -247,8 +232,8 @@ std::vector<Source> historySources(const std::string& broadcastLogPath, const st
                     continue;
                 std::filesystem::path live = folder / files::pathFromUtf8(name.substr(0, name.size() - tail.size()) + ".log");
                 if (std::filesystem::exists(live, ec)) continue;
-                std::vector<std::filesystem::path> files = rolled(entry.path());
-                if (!files.empty()) logs.push_back({modified(files.front()), live});
+                std::vector<std::string> kept = rolledNewestFirst(files::utf8FromPath(live));
+                if (!kept.empty()) logs.push_back({modified(files::pathFromUtf8(kept.front())), live});
             }
         }
         std::sort(logs.begin(), logs.end(), [](const auto& a, const auto& b) {
@@ -260,8 +245,8 @@ std::vector<Source> historySources(const std::string& broadcastLogPath, const st
             std::string peer = name.substr(0, name.size() - 4);
             if (std::filesystem::is_regular_file(log.second, ec))
                 sources.push_back({Place::Ragchew, peer, files::utf8FromPath(log.second)});
-            for (const auto& f : rolled(historyFolderOf(log.second)))
-                sources.push_back({Place::Ragchew, peer, files::utf8FromPath(f)});
+            for (const std::string& f : rolledNewestFirst(files::utf8FromPath(log.second)))
+                sources.push_back({Place::Ragchew, peer, f});
         }
     }
     return sources;

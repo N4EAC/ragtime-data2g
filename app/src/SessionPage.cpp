@@ -666,8 +666,25 @@ size_t SessionPage::findShown(const std::function<bool(const Message&)>& match) 
     return NOT_SHOWN;
 }
 
+size_t SessionPage::findThrough(const std::function<bool(const Message&)>& match)
+{
+    size_t index = findShown(match);
+    if (index != NOT_SHOWN || reviewCall_.empty()) return index;
+    // The review's older pages, each in front of the rows there: only the
+    // new ones need looking at.
+    for (size_t added = reviewOlder(); added > 0; added = reviewOlder())
+    {
+        shownVersion_ = ~0ull;
+        for (size_t i = added; i-- > 0;)
+            if (match(review_[i])) return i;
+    }
+    return NOT_SHOWN;
+}
+
 void SessionPage::showMessage(size_t index)
 {
+    // Read from up here: the rows above it stay.
+    list_->stopFollowing();
     refresh(nowMs_, utcOffsetS_);
     for (size_t row = 0; row < items_.size(); row++)
     {

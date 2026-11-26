@@ -831,6 +831,8 @@ void BroadcastPage::refresh()
 
 void BroadcastPage::showLine(size_t row)
 {
+    // Read from up here: the rows above it stay (holdHistory).
+    list_->stopFollowing();
     refresh();
     if (row >= list_->GetItemCount()) return;
     list_->SetSelection((int)row);
