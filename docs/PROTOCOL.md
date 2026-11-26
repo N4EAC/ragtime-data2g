@@ -874,7 +874,9 @@ the host's `MODES` lists them.
   lost), or an older seal or item of that station. A station that just
   tuned in doesn't ask for what went before.
 - It waits a random time within the window less its own request's
-  airtime and 2 s, reckoned in its own mode. Requests it hears from
+  airtime and 2 s, reckoned in its own mode; with a Hand window heard
+  (a SealRound beside the seal, or a roll call), that wait starts when
+  the Hand window is over (Repairs by Hand, below). Requests it hears from
   others to the same station meanwhile speak for it, if their asker's
   gear is no faster than its own (both worked out on its own ladder from
   the two S/N figures; a figure missing counts as the gear in use): the
@@ -983,12 +985,23 @@ Hand, 10.56 s at -19 dB, in place of a RepairRequest burst.
   window's channels. That Hand is its request: no RepairRequest goes
   for that lack unless the Hand doesn't go (refused or dropped), when
   it asks by burst as before. A lack wider than one Hand holds (the
-  seal itself, two files, over the caps below) asks by burst.
+  seal itself, an earlier seal, two files, over the caps below) asks by
+  burst.
+- **Not over the Hands.** A request burst keyed in the Hand window
+  would land tens of dB over the Hands in its passband, and no host
+  holds for them (a host holds its KISS bursts for a burst it hears
+  arriving or a CW ID, and a Hand has no header). So any station that
+  hears a SealRound, or a roll call, keeps its request bursts until
+  that window is over (the delay, 10.56 s and the 0.6 s search after it
+  heard the burst), then waits a random time within a listening window,
+  as after a seal (ragtime #185).
 - **The sender** takes each Hand that unpacks and sits in its call's
   channel as a RepairRequest for every item of the seal, with the
   number of symbols wanted, and repairs as for any request. The
   listening window stays open until the Hand window is over (the host's
-  `HAND END`), whatever its normal length: in a mode whose window is
+  `HAND END`), and then a normal listening window more, for the
+  requests by burst that waited for the Hands. A round with Hands in it
+  goes that much later. Without the first part, in a mode whose window is
   shorter (3 one-codeword bursts and 4 s against 3 s, 10.56 s and the
   0.6 s search), the window would end before the Hands came, the seal
   would go again into the host's hold and key as the Hands ended, and
