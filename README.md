@@ -36,6 +36,11 @@ chats on the D2G broadcast group. Current features include:
   Click one you have ragchewed with and the Session tab shows your
   earlier ragchews with it, read only, until you click it again or
   pick another station.
+- Search (Ctrl+F): a Search tab that finds words in every Broadcast line
+  and every ragchew Ragtime has kept, grouped by place, with each line
+  shown among the ones around it. Enter or a double click takes you to
+  the line in its own tab, a past ragchew read only, and a strip there
+  steps to the other lines found.
 - Voice messages, coded with [sotto](https://github.com/baitisj/sotto),
   Jeff's vocoder: 300 bytes for each second of speech at 2,400 bit/s,
   150 at 1,200, 75 at 600 or 50 at 400, every rate with sotto's

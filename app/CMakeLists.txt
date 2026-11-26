@@ -59,6 +59,8 @@ add_executable(ragtime WIN32
     src/Prefs.cpp
     src/QuitSignal.cpp
     src/Report.cpp
+    src/SearchPage.cpp
+    src/FindStrip.cpp
     src/SessionPage.cpp
     src/SettingsDialog.cpp
     src/RecentWorkPane.cpp

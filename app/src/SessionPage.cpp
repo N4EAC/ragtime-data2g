@@ -24,6 +24,7 @@
 
 #include "ChatList.h"
 #include "DrawnIcon.h"
+#include "FindStrip.h"
 #include "Html.h"
 #include "PhraseHighlight.h"
 #include "Pictures.h"
@@ -407,8 +408,20 @@ SessionPage::SessionPage(wxWindow* parent, const SessionChat& session, const rag
     down->Bind(wxEVT_BUTTON, [queueAction](wxCommandEvent&) { queueAction("down"); });
     remove->Bind(wxEVT_BUTTON, [queueAction](wxCommandEvent&) { queueAction("cancel"); });
 
+    // After a jump from the Search tab: which hit shows, and the others.
+    find_ = new FindStrip(this);
+    Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& e) {
+        if (e.GetKeyCode() == WXK_ESCAPE && find_->IsShown())
+        {
+            find_->close();
+            return;
+        }
+        e.Skip();
+    });
+
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     sizer->Add(strip_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
+    sizer->Add(find_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(list_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(queue_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(paused_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
@@ -643,6 +656,45 @@ size_t SessionPage::reviewOlder()
         review_.push_front(std::move(*it));
     }
     return page.size();
+}
+
+size_t SessionPage::findShown(const std::function<bool(const Message&)>& match) const
+{
+    const auto& messages = shownMessages();
+    for (size_t i = messages.size(); i-- > 0;)
+        if (match(messages[i])) return i;
+    return NOT_SHOWN;
+}
+
+size_t SessionPage::findThrough(const std::function<bool(const Message&)>& match)
+{
+    size_t index = findShown(match);
+    if (index != NOT_SHOWN || reviewCall_.empty()) return index;
+    // The review's older pages, each in front of the rows there: only the
+    // new ones need looking at.
+    for (size_t added = reviewOlder(); added > 0; added = reviewOlder())
+    {
+        shownVersion_ = ~0ull;
+        for (size_t i = added; i-- > 0;)
+            if (match(review_[i])) return i;
+    }
+    return NOT_SHOWN;
+}
+
+void SessionPage::showMessage(size_t index)
+{
+    // Read from up here: the rows above it stay.
+    list_->stopFollowing();
+    refresh(nowMs_, utcOffsetS_);
+    for (size_t row = 0; row < items_.size(); row++)
+    {
+        if (items_[row].file || items_[row].message != index) continue;
+        list_->SetSelection((int)row);
+        // A few lines of what led up to it above it.
+        list_->ScrollToRow(row > 3 ? row - 3 : 0);
+        list_->RefreshAll();
+        return;
+    }
 }
 
 void SessionPage::endReview()
