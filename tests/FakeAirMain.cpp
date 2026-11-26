@@ -75,7 +75,9 @@
 // "f currVFO" and "+l currVFO ALC", but not a bare "f".
 // --rig-yaesu plays a Yaesu (an FT-891, say): no PBT and no NOTCHF_RAW,
 // the notch's centre in Hz instead, "+l NOTCHF" (1500 at first), set with
-// "L NOTCHF 1200".
+// "L NOTCHF 1200"; IF SHIFT, "+l IF" (0 at first), set with "L IF 200"
+// (+-1200 Hz in 20 Hz steps); and widths rounded up to an FT-891's steps,
+// so "M USB 1000" reads back as 1100.
 // --dial-hop moves the dial to 14.250 MHz, outside the US data segments,
 // for one minute in every three, so receive only shows.
 //
@@ -259,6 +261,8 @@ public:
                         std::snprintf(value, sizeof value, "%.6f\n", notchRaw_);
                     else if (level == "NOTCHF" && yaesu_)
                         std::snprintf(value, sizeof value, "%d\n", notchHz_);
+                    else if (level == "IF" && yaesu_)
+                        std::snprintf(value, sizeof value, "%d\n", ifShift_);
                     else if (level == "STRENGTH")
                         std::snprintf(value, sizeof value, "%d\n",
                                       ++strengths_ % 6 == 0 ? -10 : noise_ + (int)(nowMs / 5000 % 4));
@@ -306,6 +310,21 @@ private:
         std::string partial;
     };
 
+    // An FT-891's widths, a width rounded up to the next, as Hamlib sets it.
+    static int yaesuWidth(const std::string& mode, int width)
+    {
+        static const int ssb[] = {200,  400,  600,  850,  1100, 1350, 1500, 1650, 1800, 1950, 2100,
+                                  2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3200};
+        static const int data[] = {50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 800, 1200, 1400, 1700, 2000,
+                                   2400, 3000};
+        const bool sideband = mode == "USB" || mode == "LSB";
+        const int* steps = sideband ? ssb : data;
+        const size_t n = sideband ? sizeof ssb / sizeof ssb[0] : sizeof data / sizeof data[0];
+        for (size_t i = 0; i < n; i++)
+            if (width <= steps[i]) return steps[i];
+        return steps[n - 1];
+    }
+
     // "M USB 1800", "L PBT_IN 0.6510", "F 7066000" (with currVFO for
     // --vfo): taken.
     bool filterSetting(const std::string& line)
@@ -328,12 +347,17 @@ private:
             int width = 0;
             if (!(in >> mode >> width) || width <= 0) return false;
             mode_ = mode;
-            width_ = width;
+            width_ = yaesu_ ? yaesuWidth(mode, width) : width;
             return true;
         }
         std::string level;
         double v = 0;
-        if ((command != "L" && command != "U") || !(in >> level >> v) || v < 0) return false;
+        if ((command != "L" && command != "U") || !(in >> level >> v) || (v < 0 && level != "IF")) return false;
+        if (level == "IF" && yaesu_ && command == "L")
+        {
+            ifShift_ = std::max(-1200, std::min(1200, (int)std::lround(v / 20) * 20));
+            return true;
+        }
         if (level == "NOTCHF" && yaesu_ && command == "L")
         {
             // A Yaesu's 10 Hz steps, 10 to 3200 Hz.
@@ -362,6 +386,7 @@ private:
     bool notchOn_ = false;
     double notchRaw_ = 0.5;
     int notchHz_ = 1500;
+    int ifShift_ = 0;
     int listener_ = -1;
     uint64_t dialHz_;
     bool hop_;

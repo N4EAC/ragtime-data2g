@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -549,6 +550,11 @@ void HamlibRig::run()
     bool readsNotch = false;
     bool readsNotchRaw = false;
     bool readsNotchHz = false;
+    bool readsIfShift = false;
+    // The IF SHIFT last written: Hamlib 4.7 can't read an FT-891's shift
+    // once it is on ("IS01+0400" doesn't parse, and the value is left as
+    // passed in), so then the shift is taken as written.
+    std::optional<int> ifWritten;
     int modeFailures = 0;
     int notchFailures = 0;
     uint64_t nextFilter = 0;
@@ -632,6 +638,31 @@ void HamlibRig::run()
         };
         knob(RIG_LEVEL_PBT_IN, f.pbtIn, "PBT_IN");
         knob(RIG_LEVEL_PBT_OUT, f.pbtOut, "PBT_OUT");
+        // IF SHIFT, on a rig with no PBT (a Yaesu), in the rig's own steps
+        // and within its reach.
+        if (f.ifShiftHz && !f.pbtIn && !f.pbtOut && rig_has_set_level(rig, RIG_LEVEL_IF) != 0)
+        {
+            int hz = *f.ifShiftHz;
+            const int most = (int)rig->caps->max_ifshift;
+            if (most > 0) hz = std::max(-most, std::min(most, hz));
+            const int step = rig->caps->level_gran[rig_setting2idx(RIG_LEVEL_IF)].step.i;
+            if (step > 1) hz = (int)std::lround((double)hz / step) * step;
+            value_t now;
+            now.i = INT_MIN;
+            const bool same = rig_has_get_level(rig, RIG_LEVEL_IF) != 0 &&
+                              rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_IF, &now) == RIG_OK && now.i != INT_MIN &&
+                              now.i == hz && (!ifWritten || *ifWritten == hz);
+            if (!same)
+            {
+                value_t value;
+                value.i = hz;
+                int k = rig_set_level(rig, RIG_VFO_CURR, RIG_LEVEL_IF, value);
+                if (k == RIG_OK)
+                    ifWritten = hz;
+                else if (problem.empty())
+                    problem = "Setting IF SHIFT failed: " + errorText(k);
+            }
+        }
         // The manual notch: moved before it goes on, off before it moves.
         auto notch = [&](bool on) {
             if (!f.notchOn || *f.notchOn != on || rig_has_set_func(rig, RIG_FUNC_MN) == 0) return;
@@ -810,6 +841,9 @@ void HamlibRig::run()
                     readsNotchRaw = rig_has_get_level(rig, RIG_LEVEL_NOTCHF_RAW) != 0;
                     // Only where there is no position: an Icom's is NOTCHF_RAW.
                     readsNotchHz = !readsNotchRaw && rig_has_get_level(rig, RIG_LEVEL_NOTCHF) != 0;
+                    // IF SHIFT only where there is no PBT.
+                    readsIfShift = !readsPbtIn && !readsPbtOut && rig_has_get_level(rig, RIG_LEVEL_IF) != 0;
+                    ifWritten.reset();
                     modeFailures = 0;
                     notchFailures = 0;
                     nextFilter = 0;
@@ -970,6 +1004,21 @@ void HamlibRig::run()
             };
             filter.pbtIn = pbt(RIG_LEVEL_PBT_IN, readsPbtIn);
             filter.pbtOut = pbt(RIG_LEVEL_PBT_OUT, readsPbtOut);
+            bool keepIf = false;
+            if (readsIfShift)
+            {
+                value_t shift;
+                shift.i = INT_MIN;
+                int r = rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_IF, &shift);
+                if (r == RIG_OK && shift.i != INT_MIN)
+                    filter.ifShiftHz = shift.i;
+                else if (r == RIG_OK && ifWritten)
+                    filter.ifShiftHz = ifWritten;    // read but not parsed: as written
+                else if (r == -RIG_ENIMPL || r == -RIG_ENAVAIL)
+                    readsIfShift = false;
+                else
+                    keepIf = true;
+            }
             bool keepNotch = false, keepHz = false;
             if (readsNotch)
             {
@@ -1012,6 +1061,7 @@ void HamlibRig::run()
             {
                 filter.notchHz = shared->status.filter->notchHz;
             }
+            if (keepIf && shared->status.filter) filter.ifShiftHz = shared->status.filter->ifShiftHz;
             std::optional<radio::RigFilter> got = filter.mode.empty() && !filter.pbtIn && !filter.pbtOut
                                                       ? std::nullopt
                                                       : std::optional<radio::RigFilter>(filter);

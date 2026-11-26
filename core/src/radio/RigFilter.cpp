@@ -16,6 +16,13 @@ bool knob(double value)
     return std::fabs(value) <= 1.0;
 }
 
+std::string ifHz(int hz)
+{
+    char text[32];
+    std::snprintf(text, sizeof text, "%+d Hz", hz);
+    return text;
+}
+
 } // namespace
 
 bool pbtCentred(double value)
@@ -52,6 +59,9 @@ std::string describe(const RigFilter& filter)
         }
         out += (out.empty() ? "" : dot) + pbt;
     }
+    if (filter.ifShiftHz && !filter.pbtIn && !filter.pbtOut)
+        out += (out.empty() ? "" : dot) +
+               (*filter.ifShiftHz == 0 ? std::string("IF shift centred") : "IF shift " + ifHz(*filter.ifShiftHz));
     if (filter.notchOn && *filter.notchOn)
     {
         char text[32];
@@ -64,6 +74,11 @@ std::string describe(const RigFilter& filter)
         out += (out.empty() ? "" : dot) + std::string(text);
     }
     return out;
+}
+
+std::string ifShiftText(const RigFilter& filter)
+{
+    return filter.ifShiftHz ? "IF " + ifHz(*filter.ifShiftHz) : std::string();
 }
 
 std::string notchText(const RigFilter& filter)

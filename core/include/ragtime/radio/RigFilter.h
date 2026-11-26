@@ -10,6 +10,10 @@
 // rig's 0 to 255, over 255), not Hz; a few rigs give Hz either side of 0.
 // A value from -1 to 1 is taken for a knob, anything bigger for Hz.
 //
+// A rig with no PBT may have IF SHIFT instead (a Yaesu: Hamlib's IF
+// level, Hz either side of 0, +-1200 on an FT-891 in 20 Hz steps), which
+// moves the whole passband; read only from a rig with no PBT.
+//
 // The manual notch, where the rig has one (Hamlib's MN function): on or
 // off, and where. An Icom gives where as its NOTCHF_RAW level, 0 to 1
 // (the rig's 0 to 255): like PBT, a position, not Hz, which
@@ -33,6 +37,7 @@ struct RigFilter
     int widthHz = 0;                // the passband with the mode; 0 if none
     std::optional<double> pbtIn;    // as the rig gives it
     std::optional<double> pbtOut;
+    std::optional<int> ifShiftHz;   // IF SHIFT, Hz, where there is no PBT
     std::optional<bool> notchOn;    // the manual notch
     std::optional<double> notchRaw; // its position, 0 to 1
     std::optional<int> notchHz;     // or its centre in Hz (NOTCHF)
@@ -40,6 +45,7 @@ struct RigFilter
     bool operator==(const RigFilter& o) const
     {
         return mode == o.mode && widthHz == o.widthHz && pbtIn == o.pbtIn && pbtOut == o.pbtOut &&
+               ifShiftHz == o.ifShiftHz &&
                notchOn == o.notchOn && notchRaw == o.notchRaw && notchHz == o.notchHz;
     }
     bool operator!=(const RigFilter& o) const { return !(*this == o); }
@@ -50,9 +56,12 @@ bool pbtCentred(double value);
 // "0.62" for a knob, "+120 Hz" for Hz.
 std::string pbtText(double value);
 // "USB · 2400 Hz filter · PBT centred", "PKTUSB · 3000 Hz filter · PBT
-// in 0.62, out 0.50 · notch 0.68"; parts the rig didn't give are left
-// out, and the notch while it is off.
+// in 0.62, out 0.50 · notch 0.68", "USB · 2400 Hz filter · IF shift
+// +200 Hz"; parts the rig didn't give are left out, and the notch while it
+// is off.
 std::string describe(const RigFilter& filter);
+// "IF +200 Hz" for the flight recorder; empty from a rig without it.
+std::string ifShiftText(const RigFilter& filter);
 // The notch for the flight recorder: "NF off", "NF 0.68", "NF 1500 Hz",
 // or "NF on" from a rig that says nothing of where; empty from a rig
 // with no notch.

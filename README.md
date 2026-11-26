@@ -99,7 +99,9 @@ will take at the current gear.
 recorded alongside data2g-host. It draws Data2G's passband, the rig's
 filter as the rig reports it, and the edges the band's noise really
 shows. With its box ticked in Settings > Rig, you can drag the
-filter's edges, or the notch out of its bay, right on the scope.
+filter's edges, or the notch out of its bay, right on the scope. An
+Icom moves its edges with twin PBT; a Yaesu with IF SHIFT and its own
+filter widths, so the edges land on the steps the rig has.
 
 ![The Ear, three Data2G bursts on the waterfall](docs/images/readme/ear.png)
 
