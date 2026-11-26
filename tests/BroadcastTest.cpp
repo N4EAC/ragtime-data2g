@@ -402,6 +402,113 @@ void testPauseCancelResend()
     CHECK(m->state == State::NotSent);
 }
 
+// A long history opens with its newest page, and older pages come in front
+// as the list asks, back to its first row; past MAX_MESSAGES the oldest go
+// back to the pages, but not while the history is held.
+void testHistoryByPages()
+{
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "ragtime-broadcast-pages-test";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::string path = (dir / "broadcast.log").string();
+    const size_t RUNS = 13, PER_RUN = 199;      // 13 rules: 2600 rows
+    {
+        broadcast::BroadcastLog log(path);
+        uint64_t t = 1792627200000;
+        uint64_t id = 1;
+        for (size_t r = 0; r < RUNS; r++)
+        {
+            log.began(t);
+            for (size_t i = 0; i < PER_RUN; i++)
+            {
+                Message m;
+                m.id = id;
+                m.from = "W1AW";
+                m.seq = (uint32_t)id++;
+                m.atMs = t += 1000;
+                m.time = (uint32_t)(t / 1000);
+                m.text = "line " + std::to_string(m.seq);
+                log.added(m);
+            }
+            log.ended(t += 1000);
+        }
+    }
+    auto inOrder = [](const std::deque<Message>& rows) {
+        uint64_t last = 0;
+        for (const Message& m : rows)
+        {
+            if (m.atMs < last) return false;
+            last = m.atMs;
+        }
+        return !rows.empty() && rows.front().kind != Message::Kind::Rule;
+    };
+
+    End a("TEST1", "CN87"), b("TEST2", "FN31");
+    broadcast::BroadcastLog log(path);
+    a.chat.setLog(&log, now);
+    const auto& rows = a.chat.messages();
+    CHECK_EQ(rows.size(), broadcast::HISTORY_PAGE);
+    CHECK(inOrder(rows));
+    CHECK(rows.back().kind == Message::Kind::Rule);
+    CHECK(a.chat.olderInLog());
+
+    // Reading up: held, older pages come in front, nothing dropped.
+    a.chat.holdHistory(true);
+    size_t all = rows.size();
+    size_t pages = 0;
+    while (size_t n = a.chat.loadOlder())
+    {
+        all += n;
+        pages++;
+        CHECK(inOrder(rows));
+    }
+    CHECK_EQ(all, RUNS * (PER_RUN + 1));
+    CHECK_EQ(rows.size(), all);
+    CHECK(!a.chat.olderInLog());
+    CHECK_EQ(rows.front().text, std::string("line 1"));
+    CHECK(pages >= 4);
+    // Every rule sits between runs: none first, one after each run.
+    size_t rules = 0;
+    for (const Message& m : rows) rules += m.kind == Message::Kind::Rule;
+    CHECK_EQ(rules, RUNS);
+
+    // Back at the bottom: the list goes back to MAX_MESSAGES rows, and the
+    // ones dropped come again, in order, when scrolled up to.
+    a.chat.holdHistory(false);
+    CHECK(rows.size() <= broadcast::MAX_MESSAGES);
+    CHECK(rows.size() >= broadcast::MAX_MESSAGES - 1);
+    CHECK(rows.front().kind != Message::Kind::Rule);
+    CHECK(a.chat.olderInLog());
+    a.chat.holdHistory(true);
+    while (a.chat.loadOlder() != 0) {}
+    CHECK_EQ(rows.size(), all);
+    CHECK(inOrder(rows));
+    CHECK_EQ(rows.front().text, std::string("line 1"));
+    a.chat.holdHistory(false);
+
+    // A row far back, found by its sender, number and time: pages come in
+    // front until it is there, held while the operator looks at it.
+    CHECK(rows.size() <= broadcast::MAX_MESSAGES);
+    auto lineNumbered = [](uint32_t seq) {
+        return [seq](const Message& m) { return m.kind == Message::Kind::Text && m.from == "W1AW" && m.seq == seq; };
+    };
+    size_t at = a.chat.loadThrough(lineNumbered(7));
+    CHECK(at != BroadcastChat::NOT_FOUND);
+    CHECK(at < rows.size() && rows[at].seq == 7);
+    CHECK(inOrder(rows));
+    // Shown already: found where it is, with nothing loaded.
+    size_t count = rows.size();
+    size_t later = a.chat.loadThrough(lineNumbered(2000));
+    CHECK(later > at && later < rows.size() && rows[later].seq == 2000);
+    CHECK_EQ(rows.size(), count);
+    // Not in the history: every page comes, and it isn't found.
+    CHECK(a.chat.loadThrough(lineNumbered(99999)) == BroadcastChat::NOT_FOUND);
+    CHECK_EQ(rows.size(), all);
+    CHECK(!a.chat.olderInLog());
+    a.chat.holdHistory(false);
+    std::filesystem::remove_all(dir, ec);
+}
+
 void testHistory()
 {
     std::filesystem::path dir = std::filesystem::temp_directory_path() / "ragtime-broadcast-history-test";
@@ -1183,6 +1290,7 @@ int main()
     testPauseCancelResend();
     testDuplicateFrame();
     testHistory();
+    testHistoryByPages();
     testStations();
     testReconnect();
     testReactions();

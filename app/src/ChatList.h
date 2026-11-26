@@ -32,6 +32,10 @@
 // for their HTML again at a change, and has wx forget only those that
 // differ. A new width forgets the heights.
 //
+// Older rows come in front as the operator scrolls near the top: the list
+// asks onNearTop, and showRowsAbove keeps the rows on screen where they
+// were, so the line being read doesn't jump.
+//
 // Whether it follows is settled the moment the operator scrolls, not at
 // the next paint. On GTK a scroll's own scroll bar update sends a size
 // event at once, before anything is drawn; judged at paint, the list
@@ -49,6 +53,15 @@ public:
     // Builds anew the rows whose HTML changed (a voice card's playhead,
     // say), with the count as it is.
     void refreshChanged();
+
+    // count rows now, the first `added` of them new in front: the rows on
+    // screen stay where they were (or the newest shows, while following).
+    void showRowsAbove(size_t count, size_t added);
+
+    // Asked, after the event, when the operator scrolls to within
+    // NEAR_TOP_ROWS of the first row: older rows wanted.
+    static constexpr size_t NEAR_TOP_ROWS = 40;
+    void onNearTop(std::function<void()> fn) { onNearTop_ = std::move(fn); }
 
     // How many rows wx has had built and laid out, all told: for tests.
     size_t rowsBuilt() const { return rowsBuilt_; }
@@ -133,6 +146,8 @@ private:
     wxPoint clickedAt_;
     std::function<void(const std::string&)> onCallsign_;
     std::function<bool(const std::string&)> isStation_;
+    std::function<void()> onNearTop_;
+    bool askedTop_ = false;     // a near-top call waiting to run
     mutable std::map<size_t, Kept> kept_;
     mutable std::vector<size_t> untracked_;     // let go of since the last change
     mutable uint64_t uses_ = 0;

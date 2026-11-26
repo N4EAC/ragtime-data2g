@@ -244,7 +244,8 @@ into the APK, so rebuild it after changing them.
   locator and a new or moved one gets a `locator` line; a Recent work
   pick blinks yellow on Globus at its last square, and with no session
   up shows the earlier ragchews with it from `SessionLog` on the Session
-  tab, read only (`SessionPage::review`, Jeff 2026-11-25: the tab
+  tab, read only, a page of its history at a time as it scrolls up
+  (`SessionPage::review`, Jeff 2026-11-25: the tab
   "Session · W1AW (read only)", greyed on GTK as "Session · none" is,
   and the words in the typing line where a lost session puts its own);
   its tooltip gives the
@@ -322,6 +323,17 @@ into the APK, so rebuild it after changing them.
   once (`SessionChat::react`). Chips under the line and a React submenu
   (`app/src/ReactionChips`); Hello takes bit 6, so `TAKES_ALL_V0` is
   `0x7F`.
+- History kept for good (2026-11-25, Jeff): the Broadcast log and each
+  station's session log roll into a history folder beside them past
+  1 MB (`broadcast-history/`, `W1AW-history/`, one file per roll named
+  for its first run's UTC time) instead of being cut, and are never
+  deleted. `history::Pages` (`core/src/history/`) reads them back from
+  the newest end; the tabs open with `HISTORY_PAGE` (500) rows, and
+  `loadOlder()` puts the page before in front when the list scrolls
+  near its top (`ChatList::onNearTop`, `showRowsAbove`). Past
+  `MAX_MESSAGES` the oldest rows go back to the pages, except while
+  `holdHistory` holds them (the list not following the newest).
+  `ChatList` builds only the rows whose HTML changed (PR #190).
 - Edits (2026-11-17, Jeff's ask, PROTOCOL.md "Edits"): a broadcast line of ours can be fixed
   until its seal goes, or would go with chat seals off (60 s quiet, 10
   minutes at most; `Seals::draft`). The fix is the same Text record
@@ -531,7 +543,7 @@ into the APK, so rebuild it after changing them.
 
 | Path | What |
 | --- | --- |
-| `core/` | `ragtime_core`, the socket-free library: no wx, no sockets in the engines, all unit-tested. Headers in `core/include/ragtime/`, sources in `core/src/`, one subfolder per area: `protocol/`, `link/`, `text/`, `files/` (package B; G adds `FileRows`, `FileTraffic`), `globus/` (C), `gearbox/` (D), `broadcast/` (E, with `BroadcastLog`; H adds `Airtime`, `Seals`, `BroadcastFiles`), `session/` (F, and `SessionLog`; `StreamLog` for cuts), `radio/` (the dial from rigctld, the US data segments, the path log, Recent work, the rig settings, the PTT follower and the hot frequencies), `picture/` (inline pictures with no codec: the image, DPID downscaling, EXIF orientation, what fits a number of seconds), `ear/` (the Ear's spectrum, finding data2g-host's sound card in PipeWire's graph, the host's process by its port, Data2G's passbands, the filter's edges from the noise, the filter model, its trials and Calibrate), `voice/` (the `.sot` voice file, the pitch strip, voice airtime; and the voice chain from the microphone to sotto: high-pass, leveller, limiter, resampler, P.56 and the Level check, with the noise reducer handed in; the microphones and speakers with the radio's card left out, and the microphone Test's verdict; no codec). Add sources to `core/CMakeLists.txt` |
+| `core/` | `ragtime_core`, the socket-free library: no wx, no sockets in the engines, all unit-tested. Headers in `core/include/ragtime/`, sources in `core/src/`, one subfolder per area: `protocol/`, `link/`, `text/`, `files/` (package B; G adds `FileRows`, `FileTraffic`), `globus/` (C), `gearbox/` (D), `broadcast/` (E, with `BroadcastLog`; H adds `Airtime`, `Seals`, `BroadcastFiles`), `session/` (F, and `SessionLog`; `StreamLog` for cuts), `history/` (the chat logs' rolled files, read back a page at a time), `radio/` (the dial from rigctld, the US data segments, the path log, Recent work, the rig settings, the PTT follower and the hot frequencies), `picture/` (inline pictures with no codec: the image, DPID downscaling, EXIF orientation, what fits a number of seconds), `ear/` (the Ear's spectrum, finding data2g-host's sound card in PipeWire's graph, the host's process by its port, Data2G's passbands, the filter's edges from the noise, the filter model, its trials and Calibrate), `voice/` (the `.sot` voice file, the pitch strip, voice airtime; and the voice chain from the microphone to sotto: high-pass, leveller, limiter, resampler, P.56 and the Level check, with the noise reducer handed in; the microphones and speakers with the radio's card left out, and the microphone Test's verdict; no codec). Add sources to `core/CMakeLists.txt` |
 | `denoise/` | `ragtime_denoise`: RNNoise as the voice chain's `voice::Denoiser` (`denoise::makeRnNoise`). RNNoise 0.1.1 (BSD-3) is fetched with git at configure time and its C built here without our warning flags; `-DFETCHCONTENT_SOURCE_DIR_RNNOISE=<checkout>` builds offline, and `-DRAGTIME_RNNOISE=OFF` gives a stand-in that makes none |
 | `audio/` | `ragtime_audio`: `audio::VoiceAudio`, voice's microphone and speaker (PipeWire or WASAPI, never the radio's card); `audio::EarAudio`, the Ear's listener, PipeWire loaded with `dlopen` (never linked) on its own thread, or on Windows WASAPI in shared mode (`WasapiEar.cpp`) on a thread of its own; `processListeningOn` (the host's process by its port: /proc, or Windows' TCP table); on macOS Core Audio, from `platform/macos/`; with `-DRAGTIME_PIPEWIRE=OFF` stand-ins that say the Ear can't listen and voice can't record |
 | `platform/macos/` | The Mac's own code (Tim Vetter's port): Core Audio voice and Ear (`CoreAudioVoice.mm`, `CoreAudioEar.mm`, devices, the radio's devices left out by the modem processes using them), the microphone permission, `/dev/cu.*` serial ports and where sotto's dylib is looked for. The audio and rig libraries pick these sources only on Apple (`docs/MACOS.md`) |

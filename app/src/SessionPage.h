@@ -13,6 +13,7 @@
 
 #include "FrontWindow.h"
 #include "ragtime/files/FileTraffic.h"
+#include "ragtime/history/History.h"
 #include "ragtime/session/SessionChat.h"
 
 class wxBoxSizer;
@@ -72,6 +73,14 @@ public:
     void onResend(std::function<void(uint64_t id)> fn) { onResend_ = std::move(fn); }
     // A reaction picked on a message's menu or chip, with its palette code.
     void onReact(std::function<void(uint64_t id, uint8_t code)> fn) { onReact_ = std::move(fn); }
+    // The station's history: loadOlder puts the page before the first row
+    // in front and says how many came; hold keeps old rows while the list
+    // isn't following the newest.
+    void onHistory(std::function<size_t()> loadOlder, std::function<void(bool hold)> hold)
+    {
+        onLoadOlder_ = std::move(loadOlder);
+        onHoldHistory_ = std::move(hold);
+    }
     // Send file... pressed.
     void onSendFile(std::function<void()> fn) { onSendFile_ = std::move(fn); }
     // Inline pictures: the picture
@@ -128,8 +137,10 @@ public:
     void focusCompose();
 
     // The earlier ragchews with call, read only, in place of the session's
-    // messages until endReview, or until a session starts.
-    void review(const std::string& call, std::vector<ragtime::session::Message> messages);
+    // messages until endReview, or until a session starts: the newest page
+    // of its log's history, and the page before each time the list is
+    // scrolled near its top. False, and no review, when it has none.
+    bool review(const std::string& call, ragtime::history::Pages<ragtime::session::Message> pages);
     void endReview();
     // The station under review, or "" when none is.
     const std::string& reviewing() const { return reviewCall_; }
@@ -155,6 +166,8 @@ private:
     }
     const std::string& shownPeer() const { return reviewCall_.empty() ? session_.peer() : reviewCall_; }
 
+    // The review's next page back, put in front: how many rows came.
+    size_t reviewOlder();
     void send();
     void showMenu(int row);
     void rebuild(uint64_t nowMs);
@@ -184,6 +197,8 @@ private:
     std::string shownWords_;
     std::string reviewCall_;        // the station under review, or ""
     std::deque<ragtime::session::Message> review_;
+    ragtime::history::Pages<ragtime::session::Message> reviewPages_;  // the review's rows not yet shown
+    uint64_t reviewId_ = 0;         // the last id a review's row was given
     std::string shownReview_;
     wxButton* send_ = nullptr;
     wxButton* sendFile_ = nullptr;
@@ -210,6 +225,8 @@ private:
     std::function<void(const std::string&, uint64_t)> onFileAction_;
     std::function<void(uint64_t)> onResend_;
     std::function<void(uint64_t, uint8_t)> onReact_;
+    std::function<size_t()> onLoadOlder_;
+    std::function<void(bool)> onHoldHistory_;
 };
 
 #endif

@@ -252,6 +252,7 @@ MainFrame::MainFrame()
     , fileTraffic_(sessionFiles_, history_)
     , clock_(this)
     , voiceTimer_(this)
+    , pictureTimer_(this)
 {
     session_.setTraffic(&fileTraffic_);
     sessionLog_.setFolder(sessionLogDir());
@@ -354,6 +355,8 @@ MainFrame::MainFrame()
             if (voicePlayer_) voicePlayer_->tick(voiceAudio(), HostConnection::nowMs());
             redrawVoices();
         }
+        else if (&e.GetTimer() == &pictureTimer_)
+            takeReadPictures();
         else
             onClock();
     });
@@ -418,6 +421,7 @@ MainFrame::~MainFrame()
 {
     clock_.Stop();
     voiceTimer_.Stop();
+    pictureTimer_.Stop();
     // No callback from the audio thread after this.
     if (voiceAudio_) voiceAudio_->stop();
     dialMenu_.reset();
@@ -810,6 +814,7 @@ void MainFrame::buildLayout()
             return r;
         },
         [this](uint64_t id) { return editInfo(id); });
+    broadcast_->onHistory([this]() { return chat_.loadOlder(); }, [this](bool hold) { chat_.holdHistory(hold); });
     broadcast_->onReact([this](uint64_t id, uint8_t code) {
         uint64_t now = HostConnection::nowMs();
         if (code == 0) chat_.unreact(id);
@@ -852,6 +857,7 @@ void MainFrame::buildLayout()
         host_->flush();
         refreshSession();
     });
+    sessionPage_->onHistory([this]() { return session_.loadOlder(); }, [this](bool hold) { session_.holdHistory(hold); });
     sessionPage_->onReact([this](uint64_t id, uint8_t code) {
         if (!session_.react(id, code, HostConnection::nowMs())) return;
         host_->flush();
@@ -1565,7 +1571,7 @@ void MainFrame::updateTabLabels()
     {
         newest = std::max(newest, m.id);
         // A station's ping to us is answered by itself: not a message.
-        if (!m.ours && m.kind != broadcast::Message::Kind::Ping && m.id > seenMessage_) unread++;
+        if (!m.ours && !m.past && m.kind != broadcast::Message::Kind::Ping && m.id > seenMessage_) unread++;
     }
     if (looking)
     {
@@ -1632,17 +1638,14 @@ void MainFrame::reviewSession(const std::string& call)
         if (session_.peer() == them) tabs_->SetSelection(TAB_SESSION);
         return;
     }
-    std::vector<session::Message> kept = sessionLog_.load(them, session::SessionChat::MAX_MESSAGES);
-    if (kept.empty())
+    const int tabBefore = sessionPage_->reviewing().empty() ? tabs_->GetSelection() : tabBeforeReview_;
+    // Never ragchewed with: nothing to show, and the tab left as it was.
+    if (!sessionPage_->review(them, sessionLog_.history(them)))
     {
-        // Never ragchewed with: nothing to show, and the tab left as it was.
         endReview();
         return;
     }
-    uint64_t id = 1;
-    for (session::Message& m : kept) m.id = id++;
-    if (sessionPage_->reviewing().empty()) tabBeforeReview_ = tabs_->GetSelection();
-    sessionPage_->review(them, std::move(kept));
+    tabBeforeReview_ = tabBefore;
     tabs_->SetSelection(TAB_SESSION);
     updateTabLabels();
 }
@@ -3297,25 +3300,79 @@ void MainFrame::viewPicture(const std::string& key, const wxString& title, const
 bool MainFrame::shelvePictureFile(const std::string& path)
 {
     std::string key = "p" + path;
-    if (pictures_.settled(key)) return true;
+    if (pictures_.settled(key) && !pictures_.released(key)) return true;
     wxFile in(utf8(path));
     wxFileOffset length = in.IsOpened() ? in.Length() : 0;
     std::vector<uint8_t> bytes(length > 0 ? (size_t)length : 0);
     if (bytes.empty() || in.Read(bytes.data(), bytes.size()) != (ssize_t)bytes.size()) return false;
+    if (pictures_.released(key))
+    {
+        // Only its thumbnail was kept: the picture itself, to view.
+        ragtime::picture::Image image;
+        std::string error;
+        if (!decodePicture(bytes.data(), bytes.size(), image, error)) return false;
+        pictures_.shelve(key, image, bytes.size());
+        return true;
+    }
     pictures_.update(key, bytes, bytes.size(), HostConnection::nowMs(), true);
     return true;
 }
+
+namespace
+{
+// How often the window looks for past pictures the reader has done.
+constexpr int PICTURE_READ_POLL_MS = 100;
+// A past picture's head, enough for its size.
+constexpr size_t PICTURE_HEAD_BYTES = 512;
+} // namespace
 
 wxString MainFrame::pastPictureHtml(const std::string& path, const wxWindow* list, const wxString& href)
 {
     // Read once: a file gone since is skipped, not read at every redraw.
     if (unreadablePictures_.count(path) != 0) return wxString();
-    if (!shelvePictureFile(path))
+    const std::string key = "p" + path;
+    if (pictures_.settled(key))
     {
-        unreadablePictures_.insert(path);
-        return wxString();
+        wxString html = pictureHtml(key, list, href);
+        // Its thumbnail made, the picture itself can wait on disk until it
+        // is viewed: a long history holds thumbnails, not pictures.
+        if (!html.empty() && pictureFrames_.count(key) == 0) pictures_.release(key);
+        return html;
     }
-    return pictureHtml("p" + path, list, href);
+    // Decoded on the reader's thread (a Cool-chic picture takes a while),
+    // and meanwhile a box its thumbnail's size, so the row keeps its height.
+    pictureReader_.read(path);
+    if (!pictureTimer_.IsRunning()) pictureTimer_.Start(PICTURE_READ_POLL_MS);
+    auto size = pictureSizes_.find(path);
+    if (size == pictureSizes_.end())
+    {
+        std::pair<int, int> wh(0, 0);
+        wxFile in(utf8(path));
+        std::vector<uint8_t> head(PICTURE_HEAD_BYTES);
+        ssize_t got = in.IsOpened() ? in.Read(head.data(), head.size()) : 0;
+        if (got > 0) pictureSize(head.data(), (size_t)got, wh.first, wh.second);
+        size = pictureSizes_.emplace(path, wh).first;
+    }
+    if (size->second.first <= 0) return wxString();
+    return PictureShelf::blankHtml(size->second.first, size->second.second, list, PICTURE_THUMB_DIP);
+}
+
+void MainFrame::takeReadPictures()
+{
+    bool any = false;
+    for (PictureReader::Done& done : pictureReader_.take())
+    {
+        if (done.ok) pictures_.shelve("p" + done.path, done.image, done.size);
+        else unreadablePictures_.insert(done.path);
+        any = true;
+    }
+    // The rows whose box becomes a picture are built again.
+    if (any)
+    {
+        broadcast_->refreshVoices();
+        sessionPage_->refreshVoices();
+    }
+    if (!pictureReader_.busy()) pictureTimer_.Stop();
 }
 
 void MainFrame::viewPictureFile(const std::string& path, const wxString& title)

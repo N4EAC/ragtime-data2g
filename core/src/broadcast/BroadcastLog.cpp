@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -235,12 +236,17 @@ BroadcastLog::BroadcastLog(std::string path) : path_(std::move(path))
 
 std::vector<Message> BroadcastLog::load(size_t max) const
 {
-    if (path_.empty()) return {};
-    std::ifstream in(files::pathFromUtf8(path_), std::ios::binary);
-    if (!in) return {};
-    std::ostringstream text;
-    text << in.rdbuf();
-    return parseBroadcastLog(text.str(), max);
+    std::vector<Message> rows = history().older(max);
+    // Never a rule on top.
+    while (!rows.empty() && rows.front().kind == Kind::Rule) rows.erase(rows.begin());
+    return rows;
+}
+
+history::Pages<Message> BroadcastLog::history() const
+{
+    return history::Pages<Message>(
+        path_, [](const std::string& text) { return parseBroadcastLog(text, SIZE_MAX); },
+        [](const Message& m) { return m.kind == Kind::Rule; });
 }
 
 void BroadcastLog::append(const std::string& line)
@@ -256,54 +262,9 @@ void BroadcastLog::append(const std::string& line)
     out << line << '\n';
 }
 
-void BroadcastLog::compact()
-{
-    if (path_.empty()) return;
-    std::filesystem::path file = files::pathFromUtf8(path_);
-    std::error_code ec;
-    uintmax_t size = std::filesystem::file_size(file, ec);
-    if (ec || size <= MAX_FILE_BYTES) return;
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return;
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    in.close();
-    // Keep from the first run that begins in the later half, or, when one
-    // run is most of the file, from the first row there (a state line
-    // whose row was cut away is skipped on reading).
-    uint64_t bytes = 0;
-    size_t from = lines.size(), row = lines.size();
-    for (size_t i = 1; i < lines.size(); i++)
-    {
-        if (bytes >= size / 2)
-        {
-            if (lines[i].compare(0, 2, "B\t") == 0)
-            {
-                from = i;
-                break;
-            }
-            bool isRow = lines[i].compare(0, 2, "M\t") == 0 || lines[i].compare(0, 2, "F\t") == 0;
-            if (isRow && row == lines.size()) row = i;
-        }
-        bytes += lines[i].size() + 1;
-    }
-    if (from == lines.size()) from = row;
-    std::filesystem::path temp = file;
-    temp += ".new";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        if (!out) return;
-        out << FIRST_LINE << '\n';
-        for (size_t i = from; i < lines.size(); i++) out << lines[i] << '\n';
-        if (!out) return;
-    }
-    std::filesystem::rename(temp, file, ec);
-}
-
 void BroadcastLog::began(uint64_t nowMs)
 {
-    compact();
+    history::rollLog(path_, MAX_FILE_BYTES, nowMs);
     append(join({"B", std::to_string(nowMs)}));
 }
 

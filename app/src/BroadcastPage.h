@@ -112,6 +112,14 @@ public:
     // A reaction picked on a line's menu or chip: its palette code, or 0 to
     // take back ours still waiting to go.
     void onReact(std::function<void(uint64_t id, uint8_t code)> fn) { onReact_ = std::move(fn); }
+    // The history: loadOlder puts the page before the first row in front
+    // and says how many came; hold keeps old rows while the list isn't
+    // following the newest (the operator reading up there).
+    void onHistory(std::function<size_t()> loadOlder, std::function<void(bool hold)> hold)
+    {
+        onLoadOlder_ = std::move(loadOlder);
+        onHoldHistory_ = std::move(hold);
+    }
     // A ping row's Ping again (and Ping back, on a station's ping to us):
     // ping goes, and whyNot says why it can't ("in a session"), or "".
     void onPing(std::function<void(const std::string& call)> ping,
@@ -238,6 +246,8 @@ private:
     std::function<EditResult(uint64_t, const std::string&)> onEdit_;
     std::function<std::string(uint64_t)> editInfo_;
     std::function<void(uint64_t, uint8_t)> onReact_;
+    std::function<size_t()> onLoadOlder_;
+    std::function<void(bool)> onHoldHistory_;
     std::function<void(const std::string&)> onPing_;
     std::function<std::string(const std::string&)> whyNoPing_;
     std::function<void()> onCheckIn_;

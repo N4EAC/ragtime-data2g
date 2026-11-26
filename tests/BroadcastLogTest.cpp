@@ -1,7 +1,8 @@
 // BroadcastLog, the Broadcast tab's lasting log: its lines read back as
 // rows with a rule after each run of Ragtime, text with tabs and newlines
 // in it, a run cut short, file lines and how they ended, the newest rows
-// only, lines it doesn't know, and the file cut back once it grows too big.
+// only, lines it doesn't know, and the file rolled into its history folder
+// once it grows too big, read back a page at a time.
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +14,7 @@
 #include "Check.h"
 #include "ragtime/broadcast/BroadcastChat.h"
 #include "ragtime/broadcast/BroadcastLog.h"
+#include "ragtime/history/History.h"
 
 using namespace ragtime;
 using broadcast::BroadcastLog;
@@ -166,47 +168,122 @@ void testOddLines()
     CHECK(broadcast::parseBroadcastLog("", 100).empty());
 }
 
-void testCutBack()
+// Every row of the history, read a page at a time from the newest, put
+// back in order.
+std::vector<Message> allByPages(const BroadcastLog& log, size_t page, size_t& pages)
 {
-    std::filesystem::path dir = scratch("broadcast-log-cut");
+    history::Pages<Message> history = log.history();
+    std::vector<Message> all;
+    pages = 0;
+    while (history.more())
+    {
+        std::vector<Message> rows = history.older(page);
+        if (rows.empty()) break;
+        pages++;
+        all.insert(all.begin(), rows.begin(), rows.end());
+    }
+    CHECK(history.older(page).empty());
+    return all;
+}
+
+void testRolledAndPaged()
+{
+    std::filesystem::path dir = scratch("broadcast-log-roll");
     std::string path = (dir / "broadcast.log").string();
     BroadcastLog log(path);
     std::string filler(200, 'x');
 
-    // Many runs: cut back at a run's start in the later half.
+    // Many runs, past the size: the next run's start moves the file whole
+    // into the history folder, named for its first run, and starts anew.
     uint64_t t = T0;
     uint64_t id = 1;
+    size_t runs = 0;
     while (std::filesystem::exists(path) == false || std::filesystem::file_size(path) <= BroadcastLog::MAX_FILE_BYTES)
     {
         log.began(t);
         for (int i = 0; i < 50; i++) log.added(text(id++, false, "W1AW", filler, t += 1000));
         log.ended(t += 1000);
+        runs++;
     }
-    uint64_t before = std::filesystem::file_size(path);
+    const size_t rowsBefore = log.load(1000000).size();
+    CHECK_EQ(rowsBefore, runs * 51);
     log.began(t += 1000);
-    uint64_t after = std::filesystem::file_size(path);
-    CHECK(after < before / 2 + 20000);
-    CHECK(after > before / 2 - 20000);
-    std::string kept = readAll(path);
-    CHECK_EQ(kept.compare(0, 24, "ragtime broadcast log 1\n"), 0);
-    CHECK_EQ(kept.compare(24, 2, "B\t"), 0);
-    CHECK(!log.load(100000).empty());
+    CHECK_EQ(readAll(path).compare(0, 26, "ragtime broadcast log 1\nB\t"), 0);
+    CHECK(std::filesystem::file_size(path) < 100);
+    const std::string folder = history::historyFolder(path);
+    CHECK_EQ(std::filesystem::path(folder).filename().string(), std::string("broadcast-history"));
+    std::vector<std::string> rolled = history::rolledLogs(path);
+    CHECK_EQ(rolled.size(), (size_t)1);
+    if (rolled.size() == 1)
+        CHECK_EQ(std::filesystem::path(rolled[0]).filename().string(), history::rolledName(T0));
+    CHECK_EQ(history::rolledName(T0), std::string("20261022-000000.log"));
 
-    // One long run: cut back at a row in the later half.
+    // Nothing lost: every row still reads, the newest first.
+    log.added(text(id++, false, "KC2G", "after the roll", t += 1000));
+    log.ended(t += 1000);
+    std::vector<Message> rows = log.load(1000000);
+    CHECK_EQ(rows.size(), rowsBefore + 2);
+    if (!rows.empty())
+    {
+        CHECK_EQ(rows.front().text, filler);
+        CHECK(rows.back().kind == Kind::Rule);
+        CHECK_EQ(rows[rows.size() - 2].text, std::string("after the roll"));
+    }
+    // The newest page alone.
+    std::vector<Message> newest = log.load(10);
+    CHECK_EQ(newest.size(), (size_t)10);
+    if (newest.size() == 10) CHECK_EQ(newest[8].text, std::string("after the roll"));
+
+    // A page at a time, through both files, gives the same rows in order.
+    size_t pages = 0;
+    std::vector<Message> paged = allByPages(log, 500, pages);
+    CHECK_EQ(paged.size(), rows.size());
+    CHECK_EQ(pages, (rows.size() + 499) / 500);
+    bool same = paged.size() == rows.size();
+    for (size_t i = 0; same && i < rows.size(); i++)
+        same = paged[i].kind == rows[i].kind && paged[i].text == rows[i].text && paged[i].atMs == rows[i].atMs;
+    CHECK(same);
+
+    // A second roll: files read newest first, a rule between them.
+    while (std::filesystem::file_size(path) <= BroadcastLog::MAX_FILE_BYTES)
+    {
+        log.began(t);
+        for (int i = 0; i < 50; i++) log.added(text(id++, false, "W1AW", filler, t += 1000));
+        log.ended(t += 1000);
+    }
+    const uint64_t secondRun = t;
+    log.began(t += 1000);
+    rolled = history::rolledLogs(path);
+    CHECK_EQ(rolled.size(), (size_t)2);
+    paged = allByPages(log, 333, pages);
+    rows = log.load(1000000);
+    CHECK_EQ(paged.size(), rows.size());
+    CHECK(!paged.empty() && paged.front().kind != Kind::Rule);
+    (void)secondRun;
+
+    // Rows given back come again at the next page.
+    history::Pages<Message> h = log.history();
+    std::vector<Message> first = h.older(5);
+    std::vector<Message> back(first.begin() + 3, first.end());
+    first.resize(3);
+    h.giveBack(back);
+    std::vector<Message> again = h.older(4);
+    CHECK_EQ(again.size(), (size_t)4);
+    if (again.size() == 4)
+    {
+        CHECK_EQ(again[2].atMs, back[0].atMs);
+        CHECK_EQ(again[3].atMs, back[1].atMs);
+    }
+
+    // One long run past the size rolls whole too.
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     log.began(t);
     while (std::filesystem::file_size(path) <= BroadcastLog::MAX_FILE_BYTES)
         log.added(text(id++, false, "W1AW", filler, t += 1000));
-    before = std::filesystem::file_size(path);
+    size_t long1 = log.load(1000000).size();
     log.began(t += 1000);
-    after = std::filesystem::file_size(path);
-    CHECK(after < before / 2 + 1000);
-    kept = readAll(path);
-    CHECK_EQ(kept.compare(24, 2, "M\t"), 0);
-    std::vector<Message> rows = log.load(100000);
-    CHECK(rows.size() > 1000);
-    CHECK(rows.back().kind == Kind::Rule);
+    CHECK_EQ(log.load(1000000).size(), long1);
 
     std::filesystem::remove_all(dir, ec);
 }
@@ -292,7 +369,7 @@ int main()
 {
     testTwoRunsAndTheirRules();
     testOddLines();
-    testCutBack();
+    testRolledAndPaged();
     testRepairedInPlace();
     testNoPath();
     testEdited();

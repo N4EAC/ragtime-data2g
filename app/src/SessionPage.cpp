@@ -1,6 +1,7 @@
 #include "SessionPage.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <ctime>
 #include <iterator>
 #include <string>
@@ -321,6 +322,25 @@ SessionPage::SessionPage(wxWindow* parent, const SessionChat& session, const rag
     strip_->SetSizer(stripSizer);
 
     list_ = new SessionMessages(this);
+    // Scrolled near the top: the page of the station's history before it.
+    list_->onNearTop([this]() {
+        const size_t before = items_.size();
+        if (!reviewCall_.empty())
+        {
+            if (reviewOlder() == 0) return;
+        }
+        else
+        {
+            if (!onLoadOlder_) return;
+            if (onHoldHistory_) onHoldHistory_(true);
+            if (onLoadOlder_() == 0) return;
+        }
+        shownVersion_ = session_.version();
+        shownFiles_ = files_.changes();
+        rebuild(nowMs_);
+        // The new rows are all older than any there: they came in front.
+        list_->showRowsAbove(items_.size(), items_.size() - std::min(before, items_.size()));
+    });
     followThemeBackground(list_, wxSYS_COLOUR_LISTBOX);
     scrollbarBeside(list_);
     paused_ = new wxStaticText(this, wxID_ANY,
@@ -559,6 +579,9 @@ void SessionPage::refresh(uint64_t nowMs, long utcOffsetS)
 
     nowMs_ = nowMs;
     utcOffsetS_ = utcOffsetS;
+    // Old rows stay while the operator reads up there, and go once the
+    // list follows the newest again.
+    if (onHoldHistory_) onHoldHistory_(!list_->following());
     if (shownVersion_ != session_.version() || shownFiles_ != files_.changes() || liveFiles_)
     {
         shownVersion_ = session_.version();
@@ -574,19 +597,52 @@ std::string SessionPage::reviewWords(const std::string& call)
     return "Read only: earlier ragchews with " + call + ". Call " + call + " to ragchew again.";
 }
 
-void SessionPage::review(const std::string& call, std::vector<Message> messages)
+bool SessionPage::review(const std::string& call, ragtime::history::Pages<Message> pages)
 {
     if (call.empty())
     {
         endReview();
-        return;
+        return false;
     }
+    std::string was = reviewCall_;
     reviewCall_ = call;
-    review_.assign(std::make_move_iterator(messages.begin()), std::make_move_iterator(messages.end()));
+    reviewPages_ = std::move(pages);
+    review_.clear();
+    if (reviewOlder() == 0)
+    {
+        // Never ragchewed with: nothing to show, and no review.
+        reviewPages_ = ragtime::history::Pages<Message>();
+        if (was.empty())
+            reviewCall_.clear();
+        else
+            endReview();
+        return false;
+    }
     shownVersion_ = ~0ull;      // rebuilt at once, from the review's rows
     list_->SetSelection(wxNOT_FOUND);
     list_->followNewest();
     refresh(nowMs_, utcOffsetS_);
+    return true;
+}
+
+size_t SessionPage::reviewOlder()
+{
+    std::vector<Message> page = reviewPages_.older(SessionChat::HISTORY_PAGE);
+    // A rule is never the first row: one heading the page goes back, to
+    // end the page before it.
+    size_t rules = 0;
+    while (rules < page.size() && page[rules].kind == Message::Kind::Rule) rules++;
+    if (rules > 0)
+    {
+        reviewPages_.giveBack(std::vector<Message>(page.begin(), page.begin() + (std::ptrdiff_t)rules));
+        page.erase(page.begin(), page.begin() + (std::ptrdiff_t)rules);
+    }
+    for (auto it = page.rbegin(); it != page.rend(); ++it)
+    {
+        it->id = ++reviewId_;
+        review_.push_front(std::move(*it));
+    }
+    return page.size();
 }
 
 void SessionPage::endReview()
@@ -594,6 +650,7 @@ void SessionPage::endReview()
     if (reviewCall_.empty()) return;
     reviewCall_.clear();
     review_.clear();
+    reviewPages_ = ragtime::history::Pages<Message>();
     shownVersion_ = ~0ull;
     list_->SetSelection(wxNOT_FOUND);
     list_->followNewest();

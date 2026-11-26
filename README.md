@@ -27,6 +27,9 @@ chats on the D2G broadcast group. Current features include:
   [Cool-Chic](https://github.com/Orange-OpenSource/Cool-Chic) low complexity
   neural image codec.
 - Reactions to messages.
+- History kept for good: every line on the Broadcast tab and in each
+  ragchew stays on disk, and scrolling up brings in older lines a page
+  at a time, back to the first.
 - "Recent work," under the station list: the stations you hear and
   work, the ones likely around at this hour first, from two weeks of
   the path log (who was heard when, and on which band).

@@ -512,6 +512,15 @@ BroadcastPage::BroadcastPage(wxWindow* parent, const BroadcastChat& chat)
     , chat_(chat)
 {
     list_ = new MessageList(this);
+    // Scrolled near the top: the page of history before it.
+    list_->onNearTop([this]() {
+        if (!onLoadOlder_) return;
+        if (onHoldHistory_) onHoldHistory_(true);
+        size_t added = onLoadOlder_();
+        if (added == 0) return;
+        list_->showRowsAbove(chat_.messages().size(), added);
+        shownVersion_ = chat_.version();
+    });
     followThemeBackground(list_, wxSYS_COLOUR_LISTBOX);
     scrollbarBeside(list_);
     paused_ = new wxStaticText(this, wxID_ANY,
@@ -796,6 +805,9 @@ void BroadcastPage::send()
 
 void BroadcastPage::refresh()
 {
+    // Old rows stay while the operator reads up there, and go once the
+    // list follows the newest again.
+    if (onHoldHistory_) onHoldHistory_(!list_->following());
     uint64_t seals = sealsVersion_ ? sealsVersion_() : 0;
     if (shownVersion_ == chat_.version() && shownSeals_ == seals && list_->GetItemCount() == chat_.messages().size())
         return;
