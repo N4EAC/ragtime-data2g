@@ -23,6 +23,7 @@ class wxListBox;
 class wxStaticText;
 class wxTextCtrl;
 class SessionMessages;
+class FindStrip;
 
 // The Session tab: the status strip
 // across the top with the one button the moment needs (Cancel while
@@ -147,6 +148,15 @@ public:
     // The words in the typing line during a review.
     static std::string reviewWords(const std::string& call);
 
+    // For a jump from the Search tab: the index among the messages shown
+    // (the session's, or the review's) of the newest that match accepts,
+    // or NOT_SHOWN; that message picked and in view; and the strip over
+    // the lines that goes with it.
+    static constexpr size_t NOT_SHOWN = ~(size_t)0;
+    size_t findShown(const std::function<bool(const ragtime::session::Message&)>& match) const;
+    void showMessage(size_t index);
+    FindStrip* findStrip() { return find_; }
+
 private:
     friend class SessionMessages;
 
@@ -190,6 +200,7 @@ private:
     wxButton* leaveNow_ = nullptr;
     wxButton* callAgain_ = nullptr;
     SessionMessages* list_ = nullptr;
+    FindStrip* find_ = nullptr;
     wxStaticText* paused_ = nullptr;
     wxTextCtrl* compose_ = nullptr;
     wxFont composeFont_;
