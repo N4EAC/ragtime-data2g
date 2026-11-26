@@ -32,6 +32,7 @@
 #include "ragtime/radio/AutoAlc.h"
 #include "ragtime/radio/PathLog.h"
 #include "ragtime/radio/RecentWork.h"
+#include "ragtime/search/HistorySearch.h"
 #include "ragtime/session/SessionChat.h"
 #include "ragtime/session/SessionLog.h"
 #include "ragtime/voice/PlayQueue.h"
@@ -62,7 +63,9 @@ struct PictureTarget;
 class RecentWorkPane;
 class RigControl;
 class DialMenu;
+class SearchPage;
 class SessionPage;
+class FindStrip;
 class StationList;
 class wxBitmapButton;
 class wxMenu;
@@ -130,6 +133,27 @@ private:
     void stationPicked(const std::string& call);
     void stationMenu(const std::string& call);
     void updateTabLabels();
+    // Recent work's pick, read only on the Session tab while no session is
+    // up ("" ends it); and the review ended, back to the tab it took over.
+    void reviewSession(const std::string& call);
+    void endReview();
+
+    // The Search tab (Ctrl+F, Jeff 2026-11-25): a fourth tab while open,
+    // after Files. Opening it searches again, with the words picked in a
+    // typing line if any; closing it goes back to the tab it came from.
+    void openSearch();
+    void backToSearch();
+    void closeSearch();
+    bool searchOpen() const;
+    // A hit shown in its own tab: Broadcast, or the ragchew read only on
+    // the Session tab, picked and in view, with the find strip over it.
+    void jumpToHit(const ragtime::search::Hit& hit);
+    // The hit step after or before the last jump, in the same place.
+    void stepHit(int step);
+    // The hits in the same place as hit, oldest first, as indices into the
+    // Search tab's hits, and hit's own place among them.
+    std::vector<size_t> hitsAlongside(const ragtime::search::Hit& hit, size_t& at) const;
+    std::vector<std::string> searchStations() const;
 
     // Sessions: entered only with
     // Call or by being called, left only with Leave or Leave now.
@@ -228,6 +252,9 @@ private:
     // session line's picture from it ("" when it can't be read).
     bool shelvePictureFile(const std::string& path);
     wxString pastPictureHtml(const std::string& path, const wxWindow* list, const wxString& href);
+    // Past pictures the reader has decoded go on the shelf, and the rows
+    // showing them are drawn again.
+    void takeReadPictures();
     void showInFrame(const std::string& key);
 
     // Voice cards: each voice message's
@@ -392,6 +419,8 @@ private:
     PictureShelf pictures_;
     std::map<std::string, PictureFrame*> pictureFrames_;   // open, by shelf key
     std::set<std::string> unreadablePictures_;             // past pictures whose files are gone
+    PictureReader pictureReader_;                          // past pictures, decoded off the window's thread
+    std::map<std::string, std::pair<int, int>> pictureSizes_;  // past pictures' own sizes, from their heads
     VoiceShelf voices_;
     std::set<std::string> unreadableVoices_;               // past voice files gone or unreadable
     ragtime::voice::PlayQueue voiceQueue_;
@@ -413,6 +442,7 @@ private:
     wxMenu* viewMenu_ = nullptr;
     wxTimer clock_;
     wxTimer voiceTimer_;        // the voice cards' playhead, while a clip plays
+    wxTimer pictureTimer_;      // past pictures coming from the reader, while it reads
     int64_t lastClockMs_ = 0;   // steady clock, at the last clock tick
 
     bool globusOn_ = true;
@@ -425,8 +455,12 @@ private:
     size_t unread_ = 0;
     uint64_t notifiedMessage_ = 0;  // the newest message id notifyBroadcast has looked at
     size_t sessionUnread_ = 0;  // heard in the session while its tab is out of sight
-    bool canBoldTabs_ = false;  // a tab's label can be bold here (GTK)
-    int sessionBold_ = -1;      // the Session tab's label is bold (1) or plain (0); -1 not yet set
+    bool canStyleTabs_ = false; // a tab's label can be bold or greyed here (GTK)
+    int sessionStyle_ = -1;     // the Session tab's label: 1 bold, 2 greyed, 3 both; -1 not yet set
+    int tabBeforeReview_ = -1;  // the tab showing when a review took the Session tab
+    SearchPage* searchPage_ = nullptr;
+    int tabBeforeSearch_ = -1;  // the tab showing when Search opened
+    ragtime::search::Hit lastJump_;   // the hit the find strips show
     size_t reactionsUnread_ = 0;    // reactions to our lines heard while the Broadcast tab is out of sight
     std::string reactionNote_;      // the latest, shown over the transfers line until reactionNoteUntilMs_
     uint64_t reactionNoteUntilMs_ = 0;

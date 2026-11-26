@@ -7,6 +7,7 @@
 #include <ctime>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +36,7 @@
 #include <wx/splitter.h>
 #include <wx/statusbr.h>
 #include <wx/stattext.h>
+#include <wx/textctrl.h>
 #include <wx/textdlg.h>
 #include <wx/tglbtn.h>
 #include <wx/utils.h>
@@ -67,6 +69,8 @@
 #include "RecentWorkPane.h"
 #include "Report.h"
 #include "RigControl.h"
+#include "FindStrip.h"
+#include "SearchPage.h"
 #include "SessionPage.h"
 #include "SettingsDialog.h"
 #include "StationList.h"
@@ -121,6 +125,7 @@ enum
     ID_TAB_BROADCAST,
     ID_TAB_SESSION,
     ID_TAB_FILES,
+    ID_SEARCH,
     ID_STATION_MESSAGE,
     ID_STATION_COPY,
     ID_CALL,
@@ -171,6 +176,7 @@ enum Tab
     TAB_BROADCAST,
     TAB_SESSION,
     TAB_FILES,
+    TAB_SEARCH,     // only while it is open
 };
 
 enum StatusField
@@ -267,6 +273,7 @@ MainFrame::MainFrame()
     , fileTraffic_(sessionFiles_, history_)
     , clock_(this)
     , voiceTimer_(this)
+    , pictureTimer_(this)
 {
     session_.setTraffic(&fileTraffic_);
     sessionLog_.setFolder(sessionLogDir());
@@ -405,6 +412,8 @@ MainFrame::MainFrame()
             if (voicePlayer_) voicePlayer_->tick(voiceAudio(), HostConnection::nowMs());
             redrawVoices();
         }
+        else if (&e.GetTimer() == &pictureTimer_)
+            takeReadPictures();
         else
             onClock();
     });
@@ -472,6 +481,7 @@ MainFrame::~MainFrame()
 #endif
     clock_.Stop();
     voiceTimer_.Stop();
+    pictureTimer_.Stop();
     // No callback from the audio thread after this.
     if (voiceAudio_) voiceAudio_->stop();
     dialMenu_.reset();
@@ -564,6 +574,7 @@ void MainFrame::buildMenus()
     viewMenu_->Append(ID_TAB_BROADCAST, "&Broadcast\tCtrl+1");
     viewMenu_->Append(ID_TAB_SESSION, "&Session\tCtrl+2");
     viewMenu_->Append(ID_TAB_FILES, "&Files\tCtrl+3");
+    viewMenu_->Append(ID_SEARCH, "Sea&rch...\tCtrl+F", "Finds words in every Broadcast line and every ragchew kept");
 
     auto* settings = new wxMenu;
     settings->Append(ID_STATION_SETTINGS, "&Station...\tCtrl+,");
@@ -657,6 +668,7 @@ void MainFrame::buildMenus()
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { tabs_->SetSelection(TAB_BROADCAST); }, ID_TAB_BROADCAST);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { tabs_->SetSelection(TAB_SESSION); }, ID_TAB_SESSION);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { tabs_->SetSelection(TAB_FILES); }, ID_TAB_FILES);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { openSearch(); }, ID_SEARCH);
     Bind(wxEVT_MENU, [this](wxCommandEvent& e) { stationList_->toggleColumn(e.GetId()); },
          StationList::ID_COLUMN_FIRST, StationList::ID_COLUMN_FIRST + broadcast::COLUMN_COUNT - 1);
     Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& e) {
@@ -752,12 +764,17 @@ void MainFrame::buildLayout()
     middle_ = new wxPanel(inner_);
     tabs_ = new wxNotebook(middle_, wxID_ANY);
     broadcast_ = new BroadcastPage(tabs_, chat_);
+
     tabs_->AddPage(broadcast_, "Broadcast", true);
     sessionPage_ = new SessionPage(tabs_, session_, fileTraffic_);
     tabs_->AddPage(sessionPage_, wxString::FromUTF8("Session \xc2\xb7 none"));
     filesPage_ = new FilesPage(tabs_, history_);
     tabs_->AddPage(filesPage_, "Files");
-    canBoldTabs_ = boldTab(tabs_, TAB_SESSION, false);
+    // The Search tab is made now and put on the strip only while open.
+    searchPage_ = new SearchPage(tabs_);
+    searchPage_->Hide();
+    canStyleTabs_ = styleTab(tabs_, TAB_SESSION, false, true);
+    sessionStyle_ = 2;
     auto* middleSizer = new wxBoxSizer(wxVERTICAL);
     middleSizer->Add(tabs_, 1, wxEXPAND);
     middle_->SetSizer(middleSizer);
@@ -844,7 +861,11 @@ void MainFrame::buildLayout()
 
     // The station list.
     stationList_->onSelect([this](const std::string& call) {
-        if (!call.empty()) recent_->clearSelection();
+        if (!call.empty())
+        {
+            recent_->clearSelection();
+            endReview();
+        }
         stationPicked(call);
     });
     // Double-clicked (or Enter): a ragchew with it (Jeff, 2026-11-13).
@@ -854,12 +875,25 @@ void MainFrame::buildLayout()
     stationList_->bells([this](const std::string& call) { return watch_.belled(call); },
                         [this](const std::string& call) { return watch_.bellTip(call); });
 
-    // Recent work: as the station list, and its order kept.
+    // Recent work: as the station list, and its order kept. A pick also
+    // shows the earlier ragchews with the station, read only, on the
+    // Session tab (Jeff, 2026-11-25).
     recent_->onSelect([this](const std::string& call) {
         if (!call.empty()) stationList_->clearSelection();
         stationPicked(call);
+        reviewSession(call);
     });
     recent_->onActivate([this](const std::string& call) { openSession(call); });
+
+    // The Search tab: the logs on disk, with their rolled history.
+    searchPage_->sources([this]() { return search::historySources(broadcastLog_.path(), sessionLog_.folder()); });
+    searchPage_->onJump([this](const search::Hit& hit) { jumpToHit(hit); });
+    searchPage_->onClose([this]() { closeSearch(); });
+    for (FindStrip* strip : {broadcast_->findStrip(), sessionPage_->findStrip()})
+    {
+        strip->onStep([this](int step) { stepHit(step); });
+        strip->onBack([this]() { backToSearch(); });
+    }
     recent_->onMenu([this](const std::string& call) { stationMenu(call); });
     recent_->onOrder([this](radio::WorkOrder order) {
         recentOrder_ = order;
@@ -913,6 +947,7 @@ void MainFrame::buildLayout()
             return r;
         },
         [this](uint64_t id) { return editInfo(id); });
+    broadcast_->onHistory([this]() { return chat_.loadOlder(); }, [this](bool hold) { chat_.holdHistory(hold); });
     broadcast_->onReact([this](uint64_t id, uint8_t code) {
         uint64_t now = HostConnection::nowMs();
         if (code == 0) chat_.unreact(id);
@@ -947,7 +982,7 @@ void MainFrame::buildLayout()
     sessionPage_->onCancel([this]() { leaveSession(); });
     sessionPage_->onLeave([this]() { leaveSession(); });
     sessionPage_->onLeaveNow([this]() { leaveSessionNow(); });
-    sessionPage_->onCallAgain([this]() { callStation(session_.peer()); });
+    sessionPage_->onCallAgain([this](const std::string& call) { callStation(call); });
     sessionPage_->onCallsign([this](const std::string& call) { openSession(call); },
                              [this](const std::string& call) { return knownStation(call); });
     sessionPage_->onResend([this](uint64_t id) {
@@ -955,6 +990,7 @@ void MainFrame::buildLayout()
         host_->flush();
         refreshSession();
     });
+    sessionPage_->onHistory([this]() { return session_.loadOlder(); }, [this](bool hold) { session_.holdHistory(hold); });
     sessionPage_->onReact([this](uint64_t id, uint8_t code) {
         if (!session_.react(id, code, HostConnection::nowMs())) return;
         host_->flush();
@@ -1706,7 +1742,7 @@ void MainFrame::updateTabLabels()
     {
         newest = std::max(newest, m.id);
         // A station's ping to us is answered by itself: not a message.
-        if (!m.ours && m.kind != broadcast::Message::Kind::Ping && m.id > seenMessage_) unread++;
+        if (!m.ours && !m.past && m.kind != broadcast::Message::Kind::Ping && m.id > seenMessage_) unread++;
     }
     if (looking)
     {
@@ -1723,10 +1759,14 @@ void MainFrame::updateTabLabels()
         placeTabToggle();
     }
 
-    // Session · W1AW, Session · calling W1AW, or greyed: Session · none.
+    // Session · W1AW, Session · calling W1AW, or greyed: Session · none,
+    // and Session · W1AW (read only) while Recent work's pick is reviewed.
     if (tabs_->GetSelection() == TAB_SESSION && IsActive()) sessionUnread_ = 0;
+    const std::string& reviewing = sessionPage_->reviewing();
     wxString session = wxString::FromUTF8("Session \xc2\xb7 ");
-    if (!session_.active())
+    if (!reviewing.empty())
+        session += utf8(reviewing) + " (read only)";
+    else if (!session_.active())
         session += "none";
     else if (session_.phase() == session::SessionChat::Phase::Calling)
         session += "calling " + utf8(session_.peer());
@@ -1734,22 +1774,213 @@ void MainFrame::updateTabLabels()
         session += utf8(session_.peer());
     if (sessionUnread_ > 0) session += wxString::Format(" (%zu)", sessionUnread_);
     // Bold while it has lines not yet seen (Jeff, 2026-11-13); where a tab
-    // can't be bold, a dot before it.
+    // can't be bold, a dot before it. Greyed with no session up, as a lost
+    // or ended one leaves it, and while reviewing (Jeff, 2026-11-25).
     const bool bold = sessionUnread_ > 0;
-    if (bold && !canBoldTabs_) session = wxString::FromUTF8("\xe2\x97\x8f ") + session;
+    const bool grey = !reviewing.empty() || !session_.active();
+    if (bold && !canStyleTabs_) session = wxString::FromUTF8("\xe2\x97\x8f ") + session;
     bool changed = false;
     if (tabs_->GetPageText(TAB_SESSION) != session)
     {
         tabs_->SetPageText(TAB_SESSION, session);
         changed = true;
     }
-    if (canBoldTabs_ && (int)bold != sessionBold_)
+    const int style = (bold ? 1 : 0) | (grey ? 2 : 0);
+    if (canStyleTabs_ && style != sessionStyle_)
     {
-        boldTab(tabs_, TAB_SESSION, bold);
-        sessionBold_ = (int)bold;
+        styleTab(tabs_, TAB_SESSION, bold, grey);
+        sessionStyle_ = style;
         changed = true;
     }
     if (changed) placeTabToggle();
+}
+
+void MainFrame::reviewSession(const std::string& call)
+{
+    std::string them = protocol::normalCallsign(call);
+    if (them.empty())
+    {
+        endReview();
+        return;
+    }
+    // A session up keeps the tab: its partner's is already there.
+    if (session_.active())
+    {
+        if (session_.peer() == them) tabs_->SetSelection(TAB_SESSION);
+        return;
+    }
+    const int tabBefore = sessionPage_->reviewing().empty() ? tabs_->GetSelection() : tabBeforeReview_;
+    // Never ragchewed with: nothing to show, and the tab left as it was.
+    if (!sessionPage_->review(them, sessionLog_.history(them)))
+    {
+        endReview();
+        return;
+    }
+    tabBeforeReview_ = tabBefore;
+    tabs_->SetSelection(TAB_SESSION);
+    updateTabLabels();
+}
+
+bool MainFrame::searchOpen() const
+{
+    return tabs_->GetPageCount() > TAB_SEARCH;
+}
+
+std::vector<std::string> MainFrame::searchStations() const
+{
+    std::set<std::string> calls;
+    for (const broadcast::Station& st : stations_.stations()) calls.insert(st.call);
+    for (const search::Source& source : search::historySources(std::string(), sessionLog_.folder()))
+        calls.insert(source.peer);
+    return std::vector<std::string>(calls.begin(), calls.end());
+}
+
+void MainFrame::openSearch()
+{
+    // Words picked in a typing line are the first search.
+    wxString words;
+    if (auto* text = dynamic_cast<wxTextCtrl*>(FindFocus()))
+    {
+        wxString picked = text->GetStringSelection();
+        picked.Trim(true).Trim(false);
+        if (!picked.empty() && picked.length() <= 60 && !picked.Contains("\n")) words = picked;
+    }
+    if (!searchOpen())
+    {
+        tabBeforeSearch_ = tabs_->GetSelection();
+        // GTK leaves a hidden page's tab off the strip.
+        searchPage_->Show();
+        tabs_->AddPage(searchPage_, "Search");
+    }
+    else if (tabs_->GetSelection() != TAB_SEARCH)
+        tabBeforeSearch_ = tabs_->GetSelection();
+    searchPage_->setStations(searchStations());
+    tabs_->SetSelection(TAB_SEARCH);
+    placeTabToggle();
+    searchPage_->begin(words);
+}
+
+void MainFrame::backToSearch()
+{
+    if (!searchOpen())
+    {
+        openSearch();
+        return;
+    }
+    tabs_->SetSelection(TAB_SEARCH);
+}
+
+void MainFrame::closeSearch()
+{
+    if (!searchOpen()) return;
+    int back = tabBeforeSearch_;
+    tabBeforeSearch_ = -1;
+    tabs_->RemovePage(TAB_SEARCH);
+    searchPage_->Hide();
+    broadcast_->findStrip()->close();
+    sessionPage_->findStrip()->close();
+    if (back >= 0 && back < TAB_SEARCH) tabs_->SetSelection((size_t)back);
+    placeTabToggle();
+}
+
+std::vector<size_t> MainFrame::hitsAlongside(const search::Hit& hit, size_t& at) const
+{
+    const std::vector<search::Hit>& hits = searchPage_->hits();
+    std::vector<size_t> same;
+    for (size_t i = 0; i < hits.size(); i++)
+        if (search::samePlace(hits[i], hit)) same.push_back(i);
+    std::stable_sort(same.begin(), same.end(), [&hits](size_t a, size_t b) { return hits[a].atMs < hits[b].atMs; });
+    at = same.size();
+    for (size_t k = 0; k < same.size(); k++)
+    {
+        const search::Hit& h = hits[same[k]];
+        if (h.atMs == hit.atMs && h.seq == hit.seq && h.from == hit.from) at = k;
+    }
+    return same;
+}
+
+void MainFrame::stepHit(int step)
+{
+    size_t at = 0;
+    std::vector<size_t> same = hitsAlongside(lastJump_, at);
+    if (at >= same.size()) return;
+    long next = (long)at + step;
+    if (next < 0 || (size_t)next >= same.size()) return;
+    searchPage_->pick(same[(size_t)next]);
+    jumpToHit(searchPage_->hits()[same[(size_t)next]]);
+}
+
+void MainFrame::jumpToHit(const search::Hit& hit)
+{
+    lastJump_ = hit;
+    size_t at = 0;
+    std::vector<size_t> same = hitsAlongside(hit, at);
+    wxString words = searchPage_->typed();
+    words.Trim(true).Trim(false);
+    auto label = [&](const char* where) {
+        return wxString::FromUTF8("\xe2\x80\x9c") + words + wxString::FromUTF8("\xe2\x80\x9d: ")
+               + wxString::Format("%zu of %zu ", at < same.size() ? at + 1 : 1, std::max<size_t>(same.size(), 1)) + where;
+    };
+    bool earlier = at < same.size() && at > 0;
+    bool later = at + 1 < same.size();
+
+    if (hit.place == search::Place::Broadcast)
+    {
+        // Paged in from the history if it is that far back.
+        size_t row = chat_.loadThrough([&hit](const broadcast::Message& m) {
+            return m.atMs == hit.atMs && m.from == hit.from && m.seq == hit.seq;
+        });
+        if (row == broadcast::BroadcastChat::NOT_FOUND)
+        {
+            searchPage_->setNote("That line isn't in the Broadcast log any more.");
+            return;
+        }
+        searchPage_->setNote(wxString());
+        sessionPage_->findStrip()->close();
+        tabs_->SetSelection(TAB_BROADCAST);
+        broadcast_->showLine(row);
+        broadcast_->findStrip()->showHit(label("on Broadcast"), earlier, later);
+        return;
+    }
+
+    std::string peer = protocol::normalCallsign(hit.peer);
+    if (peer.empty()) peer = hit.peer;
+    if (session_.active() && session_.peer() != peer)
+    {
+        searchPage_->setNote(wxString::Format(
+            "A ragchew with %s is up, so the Session tab is its until you Leave. The line shows below.",
+            wxString::FromUTF8(session_.peer())));
+        return;
+    }
+    if (!session_.active() && sessionPage_->reviewing() != peer) reviewSession(peer);
+    auto match = [&hit](const session::Message& m) {
+        return m.atMs == hit.atMs && m.from == hit.from && m.seq == hit.seq;
+    };
+    // The live session's history paged in, or the review's.
+    if (session_.active()) session_.loadThrough(match);
+    size_t index = sessionPage_->findThrough(match);
+    if (index == SessionPage::NOT_SHOWN)
+    {
+        searchPage_->setNote("That line isn't in the ragchew's log any more.");
+        return;
+    }
+    searchPage_->setNote(wxString());
+    broadcast_->findStrip()->close();
+    tabs_->SetSelection(TAB_SESSION);
+    sessionPage_->showMessage(index);
+    sessionPage_->findStrip()->showHit(label("in this ragchew"), earlier, later);
+}
+
+void MainFrame::endReview()
+{
+    if (sessionPage_->reviewing().empty()) return;
+    sessionPage_->endReview();
+    // Back to the tab the review took over, unless the operator moved on.
+    if (tabs_->GetSelection() == TAB_SESSION && tabBeforeReview_ >= 0 && tabBeforeReview_ != TAB_SESSION
+        && (size_t)tabBeforeReview_ < tabs_->GetPageCount())
+        tabs_->SetSelection((size_t)tabBeforeReview_);
+    tabBeforeReview_ = -1;
+    updateTabLabels();
 }
 
 //-------------------------------------------------------------------------
@@ -3390,25 +3621,79 @@ void MainFrame::viewPicture(const std::string& key, const wxString& title, const
 bool MainFrame::shelvePictureFile(const std::string& path)
 {
     std::string key = "p" + path;
-    if (pictures_.settled(key)) return true;
+    if (pictures_.settled(key) && !pictures_.released(key)) return true;
     wxFile in(utf8(path));
     wxFileOffset length = in.IsOpened() ? in.Length() : 0;
     std::vector<uint8_t> bytes(length > 0 ? (size_t)length : 0);
     if (bytes.empty() || in.Read(bytes.data(), bytes.size()) != (ssize_t)bytes.size()) return false;
+    if (pictures_.released(key))
+    {
+        // Only its thumbnail was kept: the picture itself, to view.
+        ragtime::picture::Image image;
+        std::string error;
+        if (!decodePicture(bytes.data(), bytes.size(), image, error)) return false;
+        pictures_.shelve(key, image, bytes.size());
+        return true;
+    }
     pictures_.update(key, bytes, bytes.size(), HostConnection::nowMs(), true);
     return true;
 }
+
+namespace
+{
+// How often the window looks for past pictures the reader has done.
+constexpr int PICTURE_READ_POLL_MS = 100;
+// A past picture's head, enough for its size.
+constexpr size_t PICTURE_HEAD_BYTES = 512;
+} // namespace
 
 wxString MainFrame::pastPictureHtml(const std::string& path, const wxWindow* list, const wxString& href)
 {
     // Read once: a file gone since is skipped, not read at every redraw.
     if (unreadablePictures_.count(path) != 0) return wxString();
-    if (!shelvePictureFile(path))
+    const std::string key = "p" + path;
+    if (pictures_.settled(key))
     {
-        unreadablePictures_.insert(path);
-        return wxString();
+        wxString html = pictureHtml(key, list, href);
+        // Its thumbnail made, the picture itself can wait on disk until it
+        // is viewed: a long history holds thumbnails, not pictures.
+        if (!html.empty() && pictureFrames_.count(key) == 0) pictures_.release(key);
+        return html;
     }
-    return pictureHtml("p" + path, list, href);
+    // Decoded on the reader's thread (a Cool-chic picture takes a while),
+    // and meanwhile a box its thumbnail's size, so the row keeps its height.
+    pictureReader_.read(path);
+    if (!pictureTimer_.IsRunning()) pictureTimer_.Start(PICTURE_READ_POLL_MS);
+    auto size = pictureSizes_.find(path);
+    if (size == pictureSizes_.end())
+    {
+        std::pair<int, int> wh(0, 0);
+        wxFile in(utf8(path));
+        std::vector<uint8_t> head(PICTURE_HEAD_BYTES);
+        ssize_t got = in.IsOpened() ? in.Read(head.data(), head.size()) : 0;
+        if (got > 0) pictureSize(head.data(), (size_t)got, wh.first, wh.second);
+        size = pictureSizes_.emplace(path, wh).first;
+    }
+    if (size->second.first <= 0) return wxString();
+    return PictureShelf::blankHtml(size->second.first, size->second.second, list, PICTURE_THUMB_DIP);
+}
+
+void MainFrame::takeReadPictures()
+{
+    bool any = false;
+    for (PictureReader::Done& done : pictureReader_.take())
+    {
+        if (done.ok) pictures_.shelve("p" + done.path, done.image, done.size);
+        else unreadablePictures_.insert(done.path);
+        any = true;
+    }
+    // The rows whose box becomes a picture are built again.
+    if (any)
+    {
+        broadcast_->refreshVoices();
+        sessionPage_->refreshVoices();
+    }
+    if (!pictureReader_.busy()) pictureTimer_.Stop();
 }
 
 void MainFrame::viewPictureFile(const std::string& path, const wxString& title)
@@ -3923,7 +4208,7 @@ std::optional<double> MainFrame::filterWidthHz() const
     // PBT as the Ear draws it (with Calibrate's model, if there is one).
     const std::optional<radio::RigFilter> f = rig_->filter();
     if (!f || f->widthHz <= 0 || ear::fmMode(f->mode)) return std::nullopt;
-    const ear::KnobModel model = loadEarCalibration(rig_->rigKey(), f->mode, f->widthHz)
+    const ear::KnobModel model = loadEarCalibration(rig_->rigKey(), f->mode, ear::calibrationWidth(*f))
                                      .value_or(ear::KnobModel::about(0, *f));
     const double width = ear::spanOf(*f, model).width();
     if (width <= 0) return std::nullopt;
@@ -4258,7 +4543,8 @@ void MainFrame::setRigFilter(const radio::RigFilter& f, const std::string& why)
     std::string said = "rig filter set " + f.mode + " " + std::to_string(f.widthHz) + " Hz";
     if (f.pbtIn) said += " PBT_IN " + radio::pbtText(*f.pbtIn);
     if (f.pbtOut) said += " PBT_OUT " + radio::pbtText(*f.pbtOut);
-    if (f.notchOn) said += " NF " + (*f.notchOn && f.notchRaw ? radio::pbtText(*f.notchRaw) : std::string("off"));
+    if (f.ifShiftHz) said += " " + radio::ifShiftText(f);
+    if (f.notchOn) said += " " + radio::notchText(f);
     host_->recorder().note(said + " (" + why + ")", HostConnection::nowMs());
     rig_->setFilter(f);
 }
@@ -4273,9 +4559,8 @@ void MainFrame::onDial()
         said = "rig filter " + filter->mode + " " + std::to_string(filter->widthHz) + " Hz";
         if (filter->pbtIn) said += " PBT_IN " + radio::pbtText(*filter->pbtIn);
         if (filter->pbtOut) said += " PBT_OUT " + radio::pbtText(*filter->pbtOut);
-        if (filter->notchOn)
-            said += " NF " + (*filter->notchOn && filter->notchRaw ? radio::pbtText(*filter->notchRaw)
-                                                                    : std::string("off"));
+        if (filter->ifShiftHz) said += " " + radio::ifShiftText(*filter);
+        if (filter->notchOn) said += " " + radio::notchText(*filter);
         // While the Ear is open its filter bar hands on each new reading.
         // Here, with every dial update, the last reading would come again
         // after a write until the rig is read back, and look like the

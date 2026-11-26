@@ -1,7 +1,8 @@
 // SessionLog, the Session tab's lasting log: its lines read back as rows
 // with a rule after each session, text with tabs and newlines in it, a
 // session cut short, the newest rows only, lines it doesn't know, a file
-// per station, and the file cut back once it grows too big.
+// per station, and the file rolled into its history folder once it grows
+// too big, read back a page at a time.
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +14,7 @@
 #include "Check.h"
 #include "ragtime/session/SessionChat.h"
 #include "ragtime/session/SessionLog.h"
+#include "ragtime/history/History.h"
 
 using namespace ragtime;
 using session::Message;
@@ -187,7 +189,7 @@ void testLinesCutShortOrUnknown()
     CHECK(session::parseSessionLog("garbage", 100).empty());
 }
 
-void testTheFileIsCutBack()
+void testTheFileIsRolled()
 {
     std::filesystem::path dir = scratch("session-log-compact");
     SessionLog log(dir.string());
@@ -206,16 +208,34 @@ void testTheFileIsCutBack()
     }
     size_t before = log.load("W1AW", 1000000).size();
     CHECK_EQ(before, (size_t)sessions * 11);
-    // The next session's start cuts it to its later half, at a session's start.
+    // The next session's start rolls the file whole into W1AW-history.
     log.began("W1AW", at += 1000);
     std::error_code ec;
     uintmax_t size = std::filesystem::file_size(dir / "W1AW.log", ec);
-    CHECK(!ec && size <= SessionLog::MAX_FILE_BYTES / 2 + 20000 && size >= SessionLog::MAX_FILE_BYTES / 2 - 20000);
+    CHECK(!ec && size < 100);
     std::string kept = readAll(log.pathFor("W1AW"));
     CHECK(kept.rfind("ragtime session log 1\nB\t", 0) == 0);
+    CHECK(std::filesystem::exists(dir / "W1AW-history" / history::rolledName(T0)));
+    log.added("W1AW", text(1, false, "W1AW", "after the roll", at += 1000));
+    log.ended("W1AW", at += 1000);
+    // Nothing lost, and a page at a time gives the same rows.
     std::vector<Message> rows = log.load("W1AW", 1000000);
-    CHECK(!rows.empty() && rows.size() % 11 == 0 && rows.size() < before);
-    CHECK(!std::filesystem::exists(dir / "W1AW.log.new"));
+    CHECK_EQ(rows.size(), before + 2);
+    history::Pages<Message> pages = log.history("W1AW");
+    std::vector<Message> paged;
+    while (pages.more())
+    {
+        std::vector<Message> page = pages.older(7);
+        if (page.empty()) break;
+        paged.insert(paged.begin(), page.begin(), page.end());
+    }
+    CHECK_EQ(paged.size(), rows.size());
+    bool same = paged.size() == rows.size();
+    for (size_t i = 0; same && i < rows.size(); i++) same = paged[i].kind == rows[i].kind && paged[i].atMs == rows[i].atMs;
+    CHECK(same);
+    // Another station's history is its own.
+    CHECK(log.load("KC2G", 100).empty());
+    CHECK(!log.history("KC2G").more());
     std::filesystem::remove_all(dir, ec);
 }
 
@@ -225,6 +245,6 @@ int main()
 {
     testTwoSessionsAndTheirRules();
     testLinesCutShortOrUnknown();
-    testTheFileIsCutBack();
+    testTheFileIsRolled();
     return ragtime_test::finish();
 }

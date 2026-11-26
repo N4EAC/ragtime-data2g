@@ -202,7 +202,7 @@ into the APK, so rebuild it after changing them.
   clock check and no `in` list since 2026-11-15, only one roll call of
   ours at a time. A window the host gives up on (30 s
   armed with the burst not gone) is armed again while the burst waits,
-  else the row says no window (`HostLink`'s `HandLost`, `Roll::Lost`). Since 2026-11-16 a seal goes with a SealRound (`0x45`) and a Hand window, and a station missing something under it asks by Hand (PROTOCOL.md "Repairs by Hand", an early version). Net control's traffic round is
+  else the row says no window (`HostLink`'s `HandLost`, `Roll::Lost`). Since 2026-11-16 a seal goes with a SealRound (`0x45`) and a Hand window, and a station missing something under it asks by Hand (PROTOCOL.md "Repairs by Hand", an early version); since 2026-11-26 (#185) the seal's listening window stays open until the Hand window ends and a listening window after it, a file's seal goes again once when nobody asks, not twice, and a station keeps its request bursts until a Hand window it heard of (a SealRound or a roll call) is over (`Seals::handsQuietUntilMs_`). Net control's traffic round is
   Stage 2, still to build.
 - Data2G PR #186 (merged at d23a62b on 2026-11-14, in v0.5.1) puts
   mode_thresholds.json in the `MODES` answer (`CHANNELS`, then
@@ -216,9 +216,11 @@ into the APK, so rebuild it after changing them.
   the gearshift's QRN line), and while the Ear or the gearshift is
   open the filter
   (`+m`, `+l PBT_IN`, `+l PBT_OUT`, `+u MN`, `+l NOTCHF_RAW`, Jeff's
-  OK 2026-10-26), naming
+  OK 2026-10-26; `+l NOTCHF` from a rig with no NOTCHF_RAW, a Yaesu or
+  a Kenwood, and `+l IF`, IF SHIFT, from one with no PBT, since
+  2026-11-26), naming
   `currVFO` for a `--vfo` one, and sets only the Ear's filter (`M`,
-  `L PBT_IN`, `L PBT_OUT`, `L NOTCHF_RAW`, `U MN`, each only when it
+  `L PBT_IN`, `L PBT_OUT` or `L IF`, `L NOTCHF_RAW` or `L NOTCHF`, `U MN`, each only when it
   differs, with its box ticked) and a frequency the operator picks
   (`F`); `Bands`, the US data segments, and 60 m's channels (the dial exactly 1.5 kHz below a channel's centre, Jeff 2026-10-27) and band segment; `PathLog`, a line a
   burst heard, appended, and each station's 24-hour strip by band),
@@ -235,6 +237,20 @@ into the APK, so rebuild it after changing them.
   back); right-click gives Edit... (`$EDITOR` in a terminal, per
   platform: `radio::editorLaunches`) and Custom... (a typed frequency);
   Ctrl with the wheel steps 1 kHz, Shift 10 kHz.
+- Search (2026-11-25, Jeff's ask): Ctrl+F or View > Search... opens a
+  Search tab after Files, there only while open (`app/src/SearchPage`).
+  `search::HistorySearch` (core) reads the Broadcast log and each
+  station's session log with their history folders
+  (`search::historySources`), file by file on the page's own thread,
+  newest first: every term (a word, or "words in quotes") in the
+  text, the sender or the `@` addressee, ASCII case folded; From and
+  When narrow it. Hits list by place, Broadcast then each ragchew the
+  latest first, with lines nearby for the pane below. A jump
+  (`MainFrame::jumpToHit`) picks the line in the Broadcast tab, or in
+  the Session tab's read-only review of that station (or the live
+  session with it), with `FindStrip` over the lines: n of m, earlier
+  and later, Back to search. With another station's ragchew up, the
+  Session tab stays its own and the search says so.
 - Recent work (2026-10-25): `radio::RecentWork` ranks
   the path log's stations, by default by (1 + days worked) × (1 + days
   heard at this hour on this band); contacts (a session, an `@` message
@@ -242,7 +258,13 @@ into the APK, so rebuild it after changing them.
   `app/src/RecentWorkPane`, under the station list in the `left_`
   splitter. Since 2026-11-01 every path log line carries the station's
   locator and a new or moved one gets a `locator` line; a Recent work
-  pick blinks yellow on Globus at its last square, its tooltip gives the
+  pick blinks yellow on Globus at its last square, and with no session
+  up shows the earlier ragchews with it from `SessionLog` on the Session
+  tab, read only, a page of its history at a time as it scrolls up
+  (`SessionPage::review`, Jeff 2026-11-25: the tab
+  "Session · W1AW (read only)", greyed on GTK as "Session · none" is,
+  and the words in the typing line where a lost session puts its own);
+  its tooltip gives the
   locator and distance, and Globus shows the locator under the pointer
   (`globus::locatorOf`, `globus::fromScreen`). Since 2026-11-02 the
   globe fills the pane and comes in on a picked path with room round it,
@@ -300,11 +322,16 @@ into the APK, so rebuild it after changing them.
   `ear::data2gKept`), Disable (PBT centred, notch off) and four presets (tap
   recalls, hold stores, pushed in while the rig has them), the notch's
   bar dragged out of its NF OFF bay (`ear::NotchModel`, learned from the
-  dip, `EdgeFinder::dip`), Revert (the
+  dip, `EdgeFinder::dip`; in Hz, NOTCHF, on a Yaesu or Kenwood), Revert (the
   filter as the Ear found it), and Calibrate for the twin PBT (`ear::KnobModel`: Hz per knob,
   the real centre and width, and a cut in the audio that hides an edge;
   two turns each side, as an IC-7100 hides its low edge under a cut
-  at 70 Hz). Quitting puts the filter back as found
+  at 70 Hz). A rig with IF SHIFT and no PBT (a Yaesu, 2026-11-26) gets
+  the same: the shift for the middle, width and shift together for one
+  edge, Calibrate by shifts of 200 and 400 Hz each way (kept for every
+  width, `ear::calibrationWidth`), and an FT-891's widths
+  (`ear::widthSteps`); Hamlib 4.7 can't read an FT-891's shift once it
+  is on, so `HamlibRig` takes it as written then. Quitting puts the filter back as found
   (`MainFrame::filterEdit_`). Span (Jeff, 2026-10-26): the picture goes
   to 4, 8 or 12 kHz, or Auto fits it past the filter's high edge
   (`ear::AutoSpan`; FM and AM start at 8 kHz, and on FM the Ear draws
@@ -317,6 +344,17 @@ into the APK, so rebuild it after changing them.
   once (`SessionChat::react`). Chips under the line and a React submenu
   (`app/src/ReactionChips`); Hello takes bit 6, so `TAKES_ALL_V0` is
   `0x7F`.
+- History kept for good (2026-11-25, Jeff): the Broadcast log and each
+  station's session log roll into a history folder beside them past
+  1 MB (`broadcast-history/`, `W1AW-history/`, one file per roll named
+  for its first run's UTC time) instead of being cut, and are never
+  deleted. `history::Pages` (`core/src/history/`) reads them back from
+  the newest end; the tabs open with `HISTORY_PAGE` (500) rows, and
+  `loadOlder()` puts the page before in front when the list scrolls
+  near its top (`ChatList::onNearTop`, `showRowsAbove`). Past
+  `MAX_MESSAGES` the oldest rows go back to the pages, except while
+  `holdHistory` holds them (the list not following the newest).
+  `ChatList` builds only the rows whose HTML changed (PR #190).
 - Edits (2026-11-17, Jeff's ask, PROTOCOL.md "Edits"): a broadcast line of ours can be fixed
   until its seal goes, or would go with chat seals off (60 s quiet, 10
   minutes at most; `Seals::draft`). The fix is the same Text record
@@ -365,7 +403,7 @@ into the APK, so rebuild it after changing them.
   deck's Rate picks 2400, 1200, 600 or 400 bit/s, codecs 2 to 5
   (`voice::Codec`, `voice::codecOf`; 40, 80 and 120 ms superframes).
   Since 2026-11-07 (Jeff) codecs 3 to 5 carry v3.8's 4-8 kHz hiss band,
-  16 kHz both ways: the pin (sotto aa44cdb, with the low rates pitch fixes and the 600/400 hiss cap) has `sotto_lr_enc16` /
+  16 kHz both ways: the pin (sotto e707134: the low rates pitch fixes, the 600/400 hiss cap, and since 2026-11-24 the better 2400 and 600/400 encoders, same frames) has `sotto_lr_enc16` /
   `_dec16` and `sotto_vlr_enc16` / `_dec16`, which `voice::Sotto` binds
   (a fixed-point build's NULL stubs leave them off).
 - The voice chain (2026-10-31, voice PR 3): `voice::Chain` in `core/src/voice/` takes the
@@ -497,8 +535,9 @@ into the APK, so rebuild it after changing them.
   (or double-clicks a callsign, Jeff 2026-11-13) or accepts one, and
   ends only on **Leave**. Selecting things never opens or
   closes one, and a quiet link shows as quiet, not closed.
-- Three tabs in this order: Broadcast, Session (pops open when a session
-  starts, greyed when none), Files.
+- The tabs start in this order: Broadcast, Session (pops open when a
+  session starts, greyed when none), Files. More may follow Files
+  (Jeff, 2026-11-25: add-ons are coming): Search, while it is open.
 - The window works at 1280×720, and every dialog fits a 1366×768 screen.
 - Plain but fun: system theme and standard widgets, no Chaotica art. The
   globe ("Globus"), the gearshift and the 1950s radio vocabulary are
@@ -517,7 +556,9 @@ into the APK, so rebuild it after changing them.
   sets the receive filter's width, PBT and manual notch, never while
   data2g-host transmits,
   through Hamlib or rigctld (`M`, `L PBT_IN`, `L PBT_OUT`,
-  `L NOTCHF_RAW` and `U MN`, Jeff's OK 2026-10-26); it and a picked
+  `L NOTCHF_RAW` and `U MN`, Jeff's OK 2026-10-26; for a Yaesu or a
+  Kenwood, `L NOTCHF`, the notch in Hz, where there is no NOTCHF_RAW, and
+  `L IF`, IF SHIFT, where there is no PBT, Jeff 2026-11-26); it and a picked
   frequency are the only set commands Ragtime ever sends rigctld. It
   never keys through rigctld (NET rigctl is left out of the Hamlib
   list).
@@ -526,7 +567,7 @@ into the APK, so rebuild it after changing them.
 
 | Path | What |
 | --- | --- |
-| `core/` | `ragtime_core`, the socket-free library: no wx, no sockets in the engines, all unit-tested. Headers in `core/include/ragtime/`, sources in `core/src/`, one subfolder per area: `protocol/`, `link/`, `text/`, `files/` (package B; G adds `FileRows`, `FileTraffic`), `globus/` (C), `gearbox/` (D), `broadcast/` (E, with `BroadcastLog`; H adds `Airtime`, `Seals`, `BroadcastFiles`), `session/` (F, and `SessionLog`; `StreamLog` for cuts), `radio/` (the dial from rigctld, the US data segments, the path log, Recent work, the rig settings, the PTT follower and the hot frequencies), `picture/` (inline pictures with no codec: the image, DPID downscaling, EXIF orientation, what fits a number of seconds), `ear/` (the Ear's spectrum, finding data2g-host's sound card in PipeWire's graph, the host's process by its port, Data2G's passbands, the filter's edges from the noise, the filter model, its trials and Calibrate), `voice/` (the `.sot` voice file, the pitch strip, voice airtime; and the voice chain from the microphone to sotto: high-pass, leveller, limiter, resampler, P.56 and the Level check, with the noise reducer handed in; the microphones and speakers with the radio's card left out, and the microphone Test's verdict; no codec). Add sources to `core/CMakeLists.txt` |
+| `core/` | `ragtime_core`, the socket-free library: no wx, no sockets in the engines, all unit-tested. Headers in `core/include/ragtime/`, sources in `core/src/`, one subfolder per area: `protocol/`, `link/`, `text/`, `files/` (package B; G adds `FileRows`, `FileTraffic`), `globus/` (C), `gearbox/` (D), `broadcast/` (E, with `BroadcastLog`; H adds `Airtime`, `Seals`, `BroadcastFiles`), `session/` (F, and `SessionLog`; `StreamLog` for cuts), `history/` (the chat logs' rolled files, read back a page at a time), `search/` (the Search tab's search over the logs), `radio/` (the dial from rigctld, the US data segments, the path log, Recent work, the rig settings, the PTT follower and the hot frequencies), `picture/` (inline pictures with no codec: the image, DPID downscaling, EXIF orientation, what fits a number of seconds), `ear/` (the Ear's spectrum, finding data2g-host's sound card in PipeWire's graph, the host's process by its port, Data2G's passbands, the filter's edges from the noise, the filter model, its trials and Calibrate), `voice/` (the `.sot` voice file, the pitch strip, voice airtime; and the voice chain from the microphone to sotto: high-pass, leveller, limiter, resampler, P.56 and the Level check, with the noise reducer handed in; the microphones and speakers with the radio's card left out, and the microphone Test's verdict; no codec). Add sources to `core/CMakeLists.txt` |
 | `denoise/` | `ragtime_denoise`: RNNoise as the voice chain's `voice::Denoiser` (`denoise::makeRnNoise`). RNNoise 0.1.1 (BSD-3) is fetched with git at configure time and its C built here without our warning flags; `-DFETCHCONTENT_SOURCE_DIR_RNNOISE=<checkout>` builds offline, and `-DRAGTIME_RNNOISE=OFF` gives a stand-in that makes none |
 | `audio/` | `ragtime_audio`: `audio::VoiceAudio`, voice's microphone and speaker (PipeWire or WASAPI, never the radio's card); `audio::EarAudio`, the Ear's listener, PipeWire loaded with `dlopen` (never linked) on its own thread, or on Windows WASAPI in shared mode (`WasapiEar.cpp`) on a thread of its own; `processListeningOn` (the host's process by its port: /proc, or Windows' TCP table); on macOS Core Audio, from `platform/macos/`; with `-DRAGTIME_PIPEWIRE=OFF` stand-ins that say the Ear can't listen and voice can't record |
 | `platform/macos/` | The Mac's own code (Tim Vetter's port): Core Audio voice and Ear (`CoreAudioVoice.mm`, `CoreAudioEar.mm`, devices, the radio's devices left out by the modem processes using them), the microphone permission, `/dev/cu.*` serial ports and where sotto's dylib is looked for. The audio and rig libraries pick these sources only on Apple (`docs/MACOS.md`) |
@@ -537,7 +578,7 @@ into the APK, so rebuild it after changing them.
 | `android/` | The Android app, a Gradle project of its own (`android/README.md`): Kotlin and Compose in `app/src/main/java/org/ragtime/radio/` (`MainActivity` draws the four views, `RadioModel` owns the worker and the state, `HostTransport` the sockets, `RadioService` the foreground service, `NativeCore` the JNI calls), the JNI library in `app/src/main/cpp/` (`Jni.cpp`, with a CMake of its own over core, `ragtime_image` and `platform/android/`), device tests in `app/src/androidTest/` and JVM tests in `app/src/test/`. The top-level CMake build never enters it |
 | `tests/` | ctest unit tests for core, plain executables on `tests/Check.h` (`CHECK`, `CHECK_EQ`). Add one with `ragtime_test(<name> <source>)` in `tests/CMakeLists.txt`. `FakeHost.*` is a fake data2g-host on loopback sockets (POSIX, so its test and the bench build only `if(UNIX)`); `FakeAirMain.cpp` is the bench `ragtime_fake_air`, and `ReplayHost.*` its `--replay`; `VoiceSynth.h` makes synthetic voices for the voice tests, and `VoiceChainMain.cpp` is `ragtime_voice_chain` (a WAV through the voice chain); `ChatListTest.cpp` and `RecentWorkPaneTest.cpp` are the wx tests, on real windows (`ragtime_widget_test` in `app/CMakeLists.txt`); `macos/` has the Mac's own tests (Core Audio, sotto in a bundle, the app quitting cleanly); `android/` has the Android adapter's tests (`ragtime_android_*_test`: the client, files, the gearshift, pictures and demo mode on fake hosts, with no phone; `Phone.h` is their pretend phone), built `if(UNIX)` |
 | `tools/` | Reference scripts: `icon/` (`make_leaf_svg.py` draws the icon, the Maple Leaf Rag's leaf going digital, as `app/res/ragtime.svg`; `make_icons.sh` renders its PNG and ICO; `make_android_icon.py` makes the Android app's vector icons from the same SVG), `globe/` (sunlit globe renderer, and the generators of the map tables in `core/src/globus/`: coasts and borders from Natural Earth, the big lakes from `ne_110m_lakes.geojson`, state and province lines from Natural Earth's 1:10m admin-1 lines, fetched for the run, for the countries in `gen_admin1_lines.py`), `gearbox/` (ladders), `ear/` (`pretend_radio.sh`, a pretend radio and data2g-host recorder in PipeWire for the Ear, and `make_radio_noise.py`, its audio), `ham_table/` (text table 0 generator and corpus: `gen_table.py --check`), `gcc16/check.py` (GCC 16 check), `android-smoke.sh` (builds the Android app and runs its device tests against a `ragtime_fake_air` you started), `codecs/` (the 2026-10-29 test of Ragtime's JPEG 2000 against JPEG XL, CompressAI and Cool-chic at 1.6 and 4 kB: scripts, bitstreams and results, its README says how to run them; not built) |
-| `cmake/` | CMake helpers. `ragtime_warnings(<target>)` gives every target `-Wall -Wextra` and, with `RAGTIME_WERROR` (on by default), `-Werror`; `Toolchain-mingw64.cmake` (the Windows cross build), `BuildWxWidgets.cmake` (wxWidgets 3.2.9, 3.2.11 on the Mac, cloned and built statically with `-DRAGTIME_BUILD_WX=ON`), `BuildHamlib.cmake` (Hamlib 4.5.5 cloned and built statically with autotools, `-DRAGTIME_BUILD_HAMLIB=ON`), `BuildImageLibs.cmake` (OpenJPEG 2.5.3, libwebp 1.4.0, libde265 1.0.15 and libheif 1.18.2 cloned and built statically, `-DRAGTIME_BUILD_IMAGE_LIBS=ON`), `EmbedFile.cmake` (the window icon built in), `BuildSotto.cmake` (libsotto built when configuring, if missing), `FetchOpenJpeg.cmake` (OpenJPEG 2.5.3 alone, cloned and built in, `-DRAGTIME_FETCH_OPENJPEG=ON`: JPEG 2000 with no WebP or HEIF, as the Android app builds its pictures) |
+| `cmake/` | CMake helpers. `ragtime_warnings(<target>)` gives every target `-Wall -Wextra` and, with `RAGTIME_WERROR` (on by default), `-Werror`; `Toolchain-mingw64.cmake` (the Windows cross build), `BuildWxWidgets.cmake` (wxWidgets 3.2.9, 3.2.11 on the Mac, cloned and built statically with `-DRAGTIME_BUILD_WX=ON`), `BuildHamlib.cmake` (Hamlib 4.7.2, as Data2G's packages carry, cloned and built statically with autotools, `-DRAGTIME_BUILD_HAMLIB=ON`, for the AppImage, Windows and the Mac; its poll thread, on by default since 4.6, is turned off when the rig opens), `BuildImageLibs.cmake` (OpenJPEG 2.5.3, libwebp 1.4.0, libde265 1.0.15 and libheif 1.18.2 cloned and built statically, `-DRAGTIME_BUILD_IMAGE_LIBS=ON`), `EmbedFile.cmake` (the window icon built in), `BuildSotto.cmake` (libsotto built when configuring, if missing), `FetchOpenJpeg.cmake` (OpenJPEG 2.5.3 alone, cloned and built in, `-DRAGTIME_FETCH_OPENJPEG=ON`: JPEG 2000 with no WebP or HEIF, as the Android app builds its pictures) |
 | `packaging/` | Release recipes: `linux/make-appimage.sh` (with `ragtime.desktop`), `windows/make-zip.sh` (with the zip's `README.txt`), `macos/make-zip.sh` (on a Mac; the bundle's CMake, `Info.plist.in`, the icon, `check-bundle.py`, `entitlements.plist` and `build-sotto.sh` for the dylibs are beside it; Developer ID signing and notarization with `MACOS_SIGN_IDENTITY` and `MACOS_NOTARY_PROFILE`). All write to `dist/`, named by `release-name.sh`. `sotto.sh` pins sotto's commit and `build-sotto.sh` builds libsotto with its Codec 2 |
 | `docs/` | The specs and how-tos: the protocol, Data2G, the gearshift, seals, Cool-chic, the flight recorder, the Mac and Android. Change them in the same PR as the code they describe. `docs/images/readme/` holds the README's screenshots, taken on the bench (`ragtime_fake_air`) at 1366×768 and squeezed with `pngquant`; retake one when its screen changes much |
 
@@ -621,7 +662,10 @@ PR #98; `--lose-headers PCT` loses that share of the burst headers
 hosts A and B hear, so the HEARD line names no call and the SNR comes
 on the frames' Hand reference. `--rig PORT` plays a rigctld for the dial (14.105 MHz, or
 `--dial HZ`; `--dial-hop` moves it outside the data segments one minute
-in three; `--rig-vfo` plays a rigctld started with `--vfo`; it answers
+in three; `--rig-vfo` plays a rigctld started with `--vfo`;
+`--rig-yaesu` plays a Yaesu, with no PBT and the notch in Hz (`+l
+NOTCHF`, `L NOTCHF`) instead of NOTCHF_RAW, IF SHIFT (`+l IF`, `L IF`)
+and an FT-891's widths; it answers
 the meters too, its SWR 1.3 or `--rig-swr X`, an ALC that follows host
 A's `TXPOWER` for Auto ALC, and the S-meter, -40 dB over S9 or
 `--rig-noise DB`) and prints anything it is

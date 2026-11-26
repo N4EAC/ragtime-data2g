@@ -20,8 +20,8 @@ namespace
 // The manual notch's on and off is a function, MN, asked with "u".
 const char* const LEVELS[DialReader::METERS] = {"ALC",      "SWR",    "RFPOWER_METER_WATTS", "RFPOWER_METER",
                                                  "STRENGTH", "PBT_IN", "PBT_OUT",             "MN",
-                                                 "NOTCHF_RAW"};
-constexpr int FILTER_STEPS = 5;
+                                                 "NOTCHF_RAW", "NOTCHF",   "IF"};
+constexpr int FILTER_STEPS = 7;
 
 // A number on a line of its own: digits, perhaps signed, perhaps with a
 // decimal part ("14074000", "14074000.000000", "0.593750").
@@ -139,6 +139,12 @@ bool DialReader::askable(int meter) const
     if (meter == (int)Meter::Power) return state_[(int)Meter::Watts] == State::Dropped;
     // The notch's position only from a rig with a manual notch.
     if (meter == (int)Meter::NotchRaw) return state_[(int)Meter::NotchOn] != State::Dropped;
+    // IF SHIFT only from a rig with no PBT (a Yaesu).
+    if (meter == (int)Meter::IfShift)
+        return state_[(int)Meter::PbtIn] == State::Dropped && state_[(int)Meter::PbtOut] == State::Dropped;
+    // Its centre in Hz only from one with no position (a Yaesu, a Kenwood).
+    if (meter == (int)Meter::NotchHz)
+        return state_[(int)Meter::NotchOn] != State::Dropped && state_[(int)Meter::NotchRaw] == State::Dropped;
     return true;
 }
 
@@ -273,7 +279,8 @@ bool DialReader::askFilter(uint64_t nowMs)
 
 int DialReader::filterMeter(int step)
 {
-    static const Meter order[] = {Meter::PbtIn, Meter::PbtOut, Meter::NotchOn, Meter::NotchRaw};
+    static const Meter order[] = {Meter::PbtIn,   Meter::PbtOut,   Meter::IfShift,
+                                  Meter::NotchOn, Meter::NotchRaw, Meter::NotchHz};
     return (int)order[step - 1];
 }
 
@@ -364,12 +371,20 @@ void DialReader::queueFilter()
             setLines_.push_back("L " + vfo + "PBT_IN " + number(*f.pbtIn));
         if (f.pbtOut && differs(&RigFilter::pbtOut, *f.pbtOut))
             setLines_.push_back("L " + vfo + "PBT_OUT " + number(*f.pbtOut));
+        // IF SHIFT, where there is no PBT: in Hz, the rig's steps its own.
+        if (f.ifShiftHz && !f.pbtIn && !f.pbtOut && (!had || had->ifShiftHz != f.ifShiftHz))
+            setLines_.push_back("L " + vfo + "IF " + std::to_string(*f.ifShiftHz));
         // The notch, each part only when it differs from what the rig said
         // last: moved before it goes on, and off before it moves, so it
         // never notches anywhere but where it is wanted.
+        // A Yaesu's or a Kenwood's notch moves in Hz, NOTCHF, within its
+        // 10 Hz step the same.
         const bool moves = f.notchRaw && differs(&RigFilter::notchRaw, *f.notchRaw);
+        const bool movesHz = f.notchHz && (!had || !had->notchHz || std::abs(*had->notchHz - *f.notchHz) >= 10);
         const bool switches = f.notchOn && (!had || had->notchOn != f.notchOn);
-        const std::string raw = moves ? "L " + vfo + "NOTCHF_RAW " + number(*f.notchRaw) : "";
+        const std::string raw = moves ? "L " + vfo + "NOTCHF_RAW " + number(*f.notchRaw)
+                                : movesHz ? "L " + vfo + "NOTCHF " + std::to_string(*f.notchHz)
+                                          : "";
         const std::string mn = switches ? "U " + vfo + "MN " + (*f.notchOn ? "1" : "0") : "";
         for (const std::string& line : f.notchOn && *f.notchOn ? std::vector<std::string>{raw, mn}
                                                                  : std::vector<std::string>{mn, raw})
@@ -383,6 +398,8 @@ void DialReader::queueFilter()
         }
         for (auto part : {&RigFilter::pbtIn, &RigFilter::pbtOut, &RigFilter::notchRaw})
             if (f.*part) next.*part = f.*part;
+        if (f.notchHz) next.notchHz = f.notchHz;
+        if (f.ifShiftHz) next.ifShiftHz = f.ifShiftHz;
         if (f.notchOn) next.notchOn = f.notchOn;
         sent_ = next;
         filterWrite_.reset();
@@ -550,8 +567,14 @@ void DialReader::meterValue(int meter, double value)
     // Nonsense (a negative SWR) is no reading.
     bool strength = meter == (int)Meter::Strength;
     bool pbt = meter == (int)Meter::PbtIn || meter == (int)Meter::PbtOut;
-    bool notch = meter == (int)Meter::NotchOn || meter == (int)Meter::NotchRaw;
-    if (notch ? (value < 0 || value > 1)
+    bool notchHz = meter == (int)Meter::NotchHz;
+    bool ifShift = meter == (int)Meter::IfShift;
+    bool notch = meter == (int)Meter::NotchOn || meter == (int)Meter::NotchRaw || notchHz;
+    // IF SHIFT past +-5 kHz is no reading: a rigctld whose Hamlib couldn't
+    // parse the rig's answer prints whatever it had.
+    if (ifShift ? std::fabs(value) > 5000
+        : notchHz ? (value <= 0 || value > 10000)
+        : notch ? (value < 0 || value > 1)
         : pbt ? std::fabs(value) > 10000
             : strength ? (value < -100 || value > 100) : (value < 0 || (meter == (int)Meter::Alc && value > 2.0)))
         return;
@@ -561,7 +584,7 @@ void DialReader::meterValue(int meter, double value)
         state_[meter] = State::Answers;
         version_++;
     }
-    if (pbt || notch)
+    if (pbt || notch || ifShift)
     {
         if (!filterWatch_) return;
         if (!reading_) reading_ = filter_.value_or(RigFilter{});
@@ -569,6 +592,8 @@ void DialReader::meterValue(int meter, double value)
         if (meter == (int)Meter::PbtOut) reading_->pbtOut = value;
         if (meter == (int)Meter::NotchOn) reading_->notchOn = value != 0;
         if (meter == (int)Meter::NotchRaw) reading_->notchRaw = value;
+        if (notchHz) reading_->notchHz = (int)std::lround(value);
+        if (ifShift) reading_->ifShiftHz = (int)std::lround(value);
         return;
     }
     if (strength)
@@ -589,7 +614,9 @@ void DialReader::meterValue(int meter, double value)
     case Meter::PbtIn:
     case Meter::PbtOut:
     case Meter::NotchOn:
-    case Meter::NotchRaw: break;
+    case Meter::NotchRaw:
+    case Meter::NotchHz:
+    case Meter::IfShift: break;
     }
     readings_.push_back(reading);
 }

@@ -89,6 +89,7 @@ ragtime_test(ragtime_watch_list_test WatchListTest.cpp)
 ragtime_test(ragtime_session_test SessionTest.cpp)
 ragtime_test(ragtime_stream_log_test StreamLogTest.cpp)
 ragtime_test(ragtime_session_log_test SessionLogTest.cpp)
+ragtime_test(ragtime_history_search_test HistorySearchTest.cpp)
 
 ragtime_test(ragtime_globus_test GlobusTest.cpp)
 # The globus test also checks the generated map tables themselves.

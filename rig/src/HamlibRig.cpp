@@ -4,7 +4,9 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -149,6 +151,25 @@ int addModel(const struct rig_caps* caps, rig_ptr_t data)
     return 1; // go on
 }
 
+// Hamlib's SmartSDR models, slices A to H (4.6 on; spelled out, as
+// older headers lack them).
+constexpr int SMARTSDR_A = 23005;
+constexpr int SMARTSDR_H = 23012;
+// Hamlib's FlexRadio 6xxx, the Kenwood-like SmartSDR CAT protocol.
+constexpr int FLEX_6XXX = 2036;
+
+bool endsWith(const std::string& text, const std::string& end)
+{
+    return text.size() >= end.size() && text.compare(text.size() - end.size(), end.size(), end) == 0;
+}
+
+// The advice for this rig, set off for the end of a problem.
+std::string adviceAfter(const radio::RigSettings& settings)
+{
+    std::string advice = flexAdvice(settings.model, settings.port);
+    return advice.empty() ? advice : ". " + advice;
+}
+
 // Opens the rig, or says why it couldn't.
 RIG* openRig(const radio::RigSettings& settings, std::string& why)
 {
@@ -192,11 +213,15 @@ RIG* openRig(const radio::RigSettings& settings, std::string& why)
             return nullptr;
         }
     }
+    // Hamlib's own poll thread off (on by default since 4.6): Ragtime's
+    // thread asks the rig everything, one command at a time.
+    auto poll = rig_token_lookup(rig, "poll_interval");
+    if (poll != RIG_CONF_END) rig_set_conf(rig, poll, "0");
     int r = rig_open(rig);
     if (r != RIG_OK)
     {
         why = "Couldn't open the " + name + (settings.port.empty() ? std::string() : " on " + settings.port) + ": "
-              + errorText(r);
+              + errorText(r) + adviceAfter(settings);
         rig_cleanup(rig);
         return nullptr;
     }
@@ -255,6 +280,31 @@ void closeRig(RIG*& rig)
 bool available()
 {
     return true;
+}
+
+std::string flexAdvice(int model, const std::string& port)
+{
+    if (model >= SMARTSDR_A && model <= SMARTSDR_H)
+    {
+        char slice = (char)('A' + (model - SMARTSDR_A));
+        return std::string("SmartSDR Slice ") + slice + " reads slice " + slice +
+               ": is it open on the radio, and is the address the radio's own (not 127.0.0.1; "
+               "Hamlib always uses port 4992)?";
+    }
+    if (model != FLEX_6XXX || !endsWith(port, ":4992")) return "";
+    bool slices = false;
+    {
+        hamlibReady();
+        std::lock_guard<std::mutex> lock(hamlibMutex());
+        slices = rig_get_caps((rig_model_t)SMARTSDR_A) != nullptr;
+    }
+    std::string advice = "4992 is the radio's own SmartSDR port, and Hamlib's FlexRadio 6xxx doesn't speak "
+                         "it (it speaks SmartSDR CAT): ";
+    if (slices)
+        return advice + "for 4992 pick FlexRadio SmartSDR Slice A (or your slice's letter), "
+                        "or keep 6xxx and give it a SmartSDR CAT port";
+    return advice + "keep 6xxx and give it a SmartSDR CAT port (" + hamlibVersion() +
+           " has no SmartSDR Slice models; they came in Hamlib 4.6)";
 }
 
 std::string hamlibVersion()
@@ -526,7 +576,14 @@ void HamlibRig::run()
     bool readsPbtOut = false;
     bool readsNotch = false;
     bool readsNotchRaw = false;
+    bool readsNotchHz = false;
+    bool readsIfShift = false;
+    // The IF SHIFT last written: Hamlib 4.7 can't read an FT-891's shift
+    // once it is on ("IS01+0400" doesn't parse, and the value is left as
+    // passed in), so then the shift is taken as written.
+    std::optional<int> ifWritten;
     int modeFailures = 0;
+    int notchFailures = 0;
     uint64_t nextFilter = 0;
     radio::SwrTrip trip;
     bool swrTurn = true;
@@ -608,6 +665,31 @@ void HamlibRig::run()
         };
         knob(RIG_LEVEL_PBT_IN, f.pbtIn, "PBT_IN");
         knob(RIG_LEVEL_PBT_OUT, f.pbtOut, "PBT_OUT");
+        // IF SHIFT, on a rig with no PBT (a Yaesu), in the rig's own steps
+        // and within its reach.
+        if (f.ifShiftHz && !f.pbtIn && !f.pbtOut && rig_has_set_level(rig, RIG_LEVEL_IF) != 0)
+        {
+            int hz = *f.ifShiftHz;
+            const int most = (int)rig->caps->max_ifshift;
+            if (most > 0) hz = std::max(-most, std::min(most, hz));
+            const int step = rig->caps->level_gran[rig_setting2idx(RIG_LEVEL_IF)].step.i;
+            if (step > 1) hz = (int)std::lround((double)hz / step) * step;
+            value_t now;
+            now.i = INT_MIN;
+            const bool same = rig_has_get_level(rig, RIG_LEVEL_IF) != 0 &&
+                              rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_IF, &now) == RIG_OK && now.i != INT_MIN &&
+                              now.i == hz && (!ifWritten || *ifWritten == hz);
+            if (!same)
+            {
+                value_t value;
+                value.i = hz;
+                int k = rig_set_level(rig, RIG_VFO_CURR, RIG_LEVEL_IF, value);
+                if (k == RIG_OK)
+                    ifWritten = hz;
+                else if (problem.empty())
+                    problem = "Setting IF SHIFT failed: " + errorText(k);
+            }
+        }
         // The manual notch: moved before it goes on, off before it moves.
         auto notch = [&](bool on) {
             if (!f.notchOn || *f.notchOn != on || rig_has_set_func(rig, RIG_FUNC_MN) == 0) return;
@@ -620,6 +702,22 @@ void HamlibRig::run()
         };
         notch(false);
         knob(RIG_LEVEL_NOTCHF_RAW, f.notchRaw, "NOTCHF_RAW");
+        // A Yaesu's or a Kenwood's notch, in Hz (an FT-891 has no
+        // NOTCHF_RAW, and moves in 10 Hz steps).
+        if (f.notchHz && rig_has_set_level(rig, RIG_LEVEL_NOTCHF) != 0)
+        {
+            value_t now;
+            const bool same = rig_has_get_level(rig, RIG_LEVEL_NOTCHF) != 0 &&
+                              rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_NOTCHF, &now) == RIG_OK &&
+                              std::abs(now.i - *f.notchHz) < 10;
+            if (!same)
+            {
+                value_t value;
+                value.i = *f.notchHz;
+                int k = rig_set_level(rig, RIG_VFO_CURR, RIG_LEVEL_NOTCHF, value);
+                if (k != RIG_OK && problem.empty()) problem = "Setting NOTCHF failed: " + errorText(k);
+            }
+        }
         notch(true);
         shared->update([&](Status& s) {
             s.filterWrites++;
@@ -769,7 +867,13 @@ void HamlibRig::run()
                     readsPbtOut = rig_has_get_level(rig, RIG_LEVEL_PBT_OUT) != 0;
                     readsNotch = rig_has_get_func(rig, RIG_FUNC_MN) != 0;
                     readsNotchRaw = rig_has_get_level(rig, RIG_LEVEL_NOTCHF_RAW) != 0;
+                    // Only where there is no position: an Icom's is NOTCHF_RAW.
+                    readsNotchHz = !readsNotchRaw && rig_has_get_level(rig, RIG_LEVEL_NOTCHF) != 0;
+                    // IF SHIFT only where there is no PBT.
+                    readsIfShift = !readsPbtIn && !readsPbtOut && rig_has_get_level(rig, RIG_LEVEL_IF) != 0;
+                    ifWritten.reset();
                     modeFailures = 0;
+                    notchFailures = 0;
                     nextFilter = 0;
                     std::string name = std::string(rig->caps->mfg_name) + " " + rig->caps->model_name;
                     shared->update([&](Status& s) {
@@ -859,14 +963,17 @@ void HamlibRig::run()
                     shared->status.version++;
                 }
             }
-            else if (++readFailures >= 3)
-            {
-                failed("The rig stopped answering: " + errorText(r == RIG_OK ? -RIG_EPROTO : r));
-                continue;
-            }
             else
             {
-                shared->update([&](Status& s) { s.problem = "Reading the dial failed: " + errorText(r); });
+                // Answered with 0 Hz: SmartSDR's, for a slice that isn't open.
+                std::string what = (r == RIG_OK ? std::string("the rig gave no frequency") : errorText(r)) +
+                                   adviceAfter(settings);
+                if (++readFailures >= 3)
+                {
+                    failed("The rig stopped answering: " + what);
+                    continue;
+                }
+                shared->update([&](Status& s) { s.problem = "Reading the dial failed: " + what; });
             }
         }
         else if (!tx && readsStrength && now >= nextStrength && now >= unkeyedMs + radio::NoiseFloor::SETTLE_MS)
@@ -925,20 +1032,64 @@ void HamlibRig::run()
             };
             filter.pbtIn = pbt(RIG_LEVEL_PBT_IN, readsPbtIn);
             filter.pbtOut = pbt(RIG_LEVEL_PBT_OUT, readsPbtOut);
+            bool keepIf = false;
+            if (readsIfShift)
+            {
+                value_t shift;
+                shift.i = INT_MIN;
+                int r = rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_IF, &shift);
+                if (r == RIG_OK && shift.i != INT_MIN)
+                    filter.ifShiftHz = shift.i;
+                else if (r == RIG_OK && ifWritten)
+                    filter.ifShiftHz = ifWritten;    // read but not parsed: as written
+                else if (r == -RIG_ENIMPL || r == -RIG_ENAVAIL)
+                    readsIfShift = false;
+                else
+                    keepIf = true;
+            }
+            bool keepNotch = false, keepHz = false;
             if (readsNotch)
             {
                 int on = 0;
-                if (rig_get_func(rig, RIG_VFO_CURR, RIG_FUNC_MN, &on) == RIG_OK)
+                int r = rig_get_func(rig, RIG_VFO_CURR, RIG_FUNC_MN, &on);
+                if (r == RIG_OK)
                 {
+                    notchFailures = 0;
                     filter.notchOn = on != 0;
                     filter.notchRaw = pbt(RIG_LEVEL_NOTCHF_RAW, readsNotchRaw);
+                    if (readsNotchHz)
+                    {
+                        value_t hz;
+                        hz.i = 0;
+                        if (rig_get_level(rig, RIG_VFO_CURR, RIG_LEVEL_NOTCHF, &hz) == RIG_OK && hz.i > 0)
+                            filter.notchHz = hz.i;
+                        else
+                            keepHz = true;
+                    }
                 }
-                else
+                // A slow answer now and then is no reason to stop asking.
+                else if (r == -RIG_ENIMPL || r == -RIG_ENAVAIL || ++notchFailures >= 3)
                 {
                     readsNotch = false;
                 }
+                else
+                {
+                    keepNotch = true;
+                }
             }
             std::lock_guard<std::mutex> lock(shared->mutex);
+            if (keepNotch && shared->status.filter)
+            {
+                // The notch as last read, rather than none for a moment.
+                filter.notchOn = shared->status.filter->notchOn;
+                filter.notchRaw = shared->status.filter->notchRaw;
+                filter.notchHz = shared->status.filter->notchHz;
+            }
+            else if (keepHz && shared->status.filter)
+            {
+                filter.notchHz = shared->status.filter->notchHz;
+            }
+            if (keepIf && shared->status.filter) filter.ifShiftHz = shared->status.filter->ifShiftHz;
             std::optional<radio::RigFilter> got = filter.mode.empty() && !filter.pbtIn && !filter.pbtOut
                                                       ? std::nullopt
                                                       : std::optional<radio::RigFilter>(filter);
@@ -953,7 +1104,7 @@ void HamlibRig::run()
         uint64_t until = rig == nullptr ? now + 250 : !tx ? nextPoll : meters.empty() ? now + 1000 : nextMeterMs;
         if (rig != nullptr && !tx && readsStrength)
             until = std::min(until, std::max(nextStrength, unkeyedMs + radio::NoiseFloor::SETTLE_MS));
-        if (rig != nullptr && !tx && filterWatch && (readsMode || readsPbtIn || readsPbtOut))
+        if (rig != nullptr && !tx && filterWatch && (readsMode || readsPbtIn || readsPbtOut || readsNotch))
             until = std::min(until, nextFilter);
         std::unique_lock<std::mutex> lock(shared->mutex);
         shared->wake.wait_for(lock, std::chrono::milliseconds(until > now ? until - now : 1), [&]() {

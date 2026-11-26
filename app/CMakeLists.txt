@@ -59,6 +59,8 @@ add_executable(ragtime WIN32 MACOSX_BUNDLE
     src/Prefs.cpp
     src/QuitSignal.cpp
     src/Report.cpp
+    src/SearchPage.cpp
+    src/FindStrip.cpp
     src/SessionPage.cpp
     src/SettingsDialog.cpp
     src/RecentWorkPane.cpp
@@ -264,9 +266,16 @@ if(RAGTIME_TESTS AND NOT WIN32)
     endfunction()
 
     ragtime_widget_test(ragtime_chat_list_test ${PROJECT_SOURCE_DIR}/tests/ChatListTest.cpp src/ChatList.cpp)
+    ragtime_widget_test(ragtime_broadcast_history_ui_test ${PROJECT_SOURCE_DIR}/tests/BroadcastPageHistoryTest.cpp
+        src/BroadcastPage.cpp src/ChatList.cpp src/FindStrip.cpp src/DrawnIcon.cpp src/GearshiftIcon.cpp
+        src/Html.cpp src/PhraseHighlight.cpp src/ReactionChips.cpp src/SealBadge.cpp src/Theme.cpp)
+    set_tests_properties(ragtime_broadcast_history_ui_test PROPERTIES TIMEOUT 30)
     ragtime_widget_test(ragtime_recent_work_pane_test ${PROJECT_SOURCE_DIR}/tests/RecentWorkPaneTest.cpp
         src/RecentWorkPane.cpp src/DrawnIcon.cpp src/Html.cpp src/Theme.cpp src/UnpickClick.cpp)
-    set_tests_properties(ragtime_chat_list_test ragtime_recent_work_pane_test PROPERTIES TIMEOUT 30)
+    ragtime_widget_test(ragtime_picture_reader_test ${PROJECT_SOURCE_DIR}/tests/PictureReaderTest.cpp src/Pictures.cpp)
+    target_link_libraries(ragtime_picture_reader_test PRIVATE ragtime_image)
+    target_compile_definitions(ragtime_picture_reader_test PRIVATE RAGTIME_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    set_tests_properties(ragtime_chat_list_test ragtime_recent_work_pane_test ragtime_picture_reader_test PROPERTIES TIMEOUT 30)
     if(APPLE)
         ragtime_widget_test(ragtime_startup_splash_test ${PROJECT_SOURCE_DIR}/tests/StartupSplashTest.cpp
             src/StartupSplash.cpp)

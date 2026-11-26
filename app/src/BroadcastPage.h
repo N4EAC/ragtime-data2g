@@ -79,6 +79,8 @@ void fillFileMenu(wxMenu& menu, const FileCard& card, int firstId, std::function
 // gone, is being repaired, or shows a station holds it. Theirs show only
 // whether they match their seal. Seals aren't signed until Stage 2, so a
 // badge never claims an identity.
+class FindStrip;
+
 class BroadcastPage : public wxPanel
 {
 public:
@@ -113,6 +115,14 @@ public:
     // A reaction picked on a line's menu or chip: its palette code, or 0 to
     // take back ours still waiting to go.
     void onReact(std::function<void(uint64_t id, uint8_t code)> fn) { onReact_ = std::move(fn); }
+    // The history: loadOlder puts the page before the first row in front
+    // and says how many came; hold keeps old rows while the list isn't
+    // following the newest (the operator reading up there).
+    void onHistory(std::function<size_t()> loadOlder, std::function<void(bool hold)> hold)
+    {
+        onLoadOlder_ = std::move(loadOlder);
+        onHoldHistory_ = std::move(hold);
+    }
     // A ping row's Ping again (and Ping back, on a station's ping to us):
     // ping goes, and whyNot says why it can't ("in a session"), or "".
     void onPing(std::function<void(const std::string& call)> ping,
@@ -185,6 +195,11 @@ public:
     void refresh();
     // The fix strip's cost and countdown, each tick while a line is fixed.
     void refreshEdit();
+    // A line (an index into the chat's messages) picked and in view, for a
+    // jump from the Search tab; and the strip over the lines that goes
+    // with it.
+    void showLine(size_t row);
+    FindStrip* findStrip() { return find_; }
     void setGearLabel(const wxString& label, const wxString& tooltip, double bitsPerSecond = 0.0);
     // Pause sending shows a line saying so; with a reason (receive only,
     // outside the US data segments) the line gives it instead.
@@ -198,7 +213,7 @@ private:
 
     void send();
     void clearView();
-    void updateRows();
+    void updateRows(size_t added = 0);
     // Edits: the line taken into the entry line, and back out of it.
     void startEdit(uint64_t id);
     void endEdit();
@@ -216,6 +231,7 @@ private:
 
     const ragtime::broadcast::BroadcastChat& chat_;
     MessageList* list_ = nullptr;
+    FindStrip* find_ = nullptr;
     wxStaticText* paused_ = nullptr;
     wxStaticText* editStrip_ = nullptr;
     uint64_t editing_ = 0;          // the line of ours being fixed
@@ -236,6 +252,8 @@ private:
     // Clear hides earlier rows in this window. The chat still owns its
     // history, pending sends and records used by the seal engine.
     uint64_t clearedThrough_ = 0;
+    bool clearedHistory_ = false;
+    bool reviewingHistory_ = false;
     std::vector<size_t> visibleRows_;
     uint64_t shownVersion_ = 0;
     uint64_t shownSeals_ = 0;
@@ -246,6 +264,8 @@ private:
     std::function<EditResult(uint64_t, const std::string&)> onEdit_;
     std::function<std::string(uint64_t)> editInfo_;
     std::function<void(uint64_t, uint8_t)> onReact_;
+    std::function<size_t()> onLoadOlder_;
+    std::function<void(bool)> onHoldHistory_;
     std::function<void(const std::string&)> onPing_;
     std::function<std::string(const std::string&)> whyNoPing_;
     std::function<void()> onCheckIn_;

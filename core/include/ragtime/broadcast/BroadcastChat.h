@@ -33,7 +33,12 @@
 //   the station's settings change, and at most every 10 minutes after
 //   that, so the station list learns locators without a burst of its own.
 // - History: with a BroadcastLog, the tab opens with what was said before,
-//   a rule where Ragtime last closed, and the log carries on below.
+//   a rule where Ragtime last closed, and the log carries on below. It
+//   opens with the newest HISTORY_PAGE rows, and loadOlder() puts the page
+//   before them in front, back to the start of the history (the list asks
+//   as the operator scrolls near its top). Past MAX_MESSAGES the oldest
+//   rows go back to the log's pages, but not while the history is held
+//   (the operator reading up there).
 //
 // No sockets and no clock: the time is passed in, and HostLink is the
 // socket-free one the app feeds.
@@ -52,6 +57,7 @@
 #include <utility>
 #include <vector>
 
+#include "ragtime/history/History.h"
 #include "ragtime/link/HostLink.h"
 #include "ragtime/protocol/Hands.h"
 #include "ragtime/protocol/Reactions.h"
@@ -235,8 +241,12 @@ constexpr uint64_t HELLO_EVERY_MS = 10 * 60 * 1000;
 // The longest message taken at once, in bytes: about a screenful, a few
 // frames.
 constexpr size_t MAX_TYPED = 2000;
-// Messages kept in the list; the oldest go first.
+// Messages kept in the list; the oldest go first, back to the log's
+// pages, unless the history is held.
 constexpr size_t MAX_MESSAGES = 2000;
+// The rows of history read in at once: the newest at the start, then a
+// page more each time the list asks.
+constexpr size_t HISTORY_PAGE = 500;
 
 class BroadcastLog;
 
@@ -266,6 +276,25 @@ public:
     void setLog(BroadcastLog* log, uint64_t nowMs);
     // Ragtime is closing: the log's rule goes here.
     void closeLog(uint64_t nowMs);
+
+    // The page of the log's history before the list's first row, put in
+    // front of it, greyed and marked past: how many rows came (0 at the
+    // start of the history, or with no log).
+    size_t loadOlder();
+    // True while the log has rows from before the list's first.
+    bool olderInLog() const { return log_ != nullptr && pages_.more(); }
+    // While held, no old row is dropped: the operator is reading up there.
+    // Let go, the list goes back to MAX_MESSAGES rows.
+    void holdHistory(bool hold);
+    // Pages of the log's history put in front, as loadOlder() does, until
+    // a row match() takes is in messages(): its index there, the newest
+    // such row (rows already shown are looked at first), or NOT_FOUND
+    // when the history ends first. Loading holds the history
+    // (holdHistory(true)), so the row stays until the list lets go.
+    // Match on the row's atMs, from and seq: they are the same in every
+    // file of the history.
+    size_t loadThrough(const std::function<bool(const Message&)>& match);
+    static constexpr size_t NOT_FOUND = static_cast<size_t>(-1);
 
     // The newest broadcast item's number, for the app to keep.
     uint32_t newestItem() const { return numbering_.newestItem(); }
@@ -440,6 +469,8 @@ private:
     // bytes, between words where it can.
     std::vector<std::string> split(const std::string& text, const std::string& to, size_t firstRoom);
     void trim();
+    // Rules heading a page of history go back to the pages.
+    void keepUnder(std::vector<Message>& page);
     // Where a line heard goes: in its place among its sender's lines (one
     // repaired, or heard late, slots in above the sender's later ones), by
     // the record's time among the others' there; the end when it is the
@@ -486,6 +517,8 @@ private:
     link::HostLink& link_;
     ItemsFn onItems_;
     BroadcastLog* log_ = nullptr;
+    history::Pages<Message> pages_;     // the log's rows older than the list's
+    bool holdingHistory_ = false;
     Settings settings_;
     protocol::Numbering numbering_;
     std::deque<Message> messages_;

@@ -12,7 +12,7 @@ and on which band, each of your friends gets through, so it can tell you
 who is likely around now, and the best time of day to check in to the
 D2G net to find them.
 
-Status: 0.4.0 beta 5. Ragtime connects to data2g-host,
+Status: 0.4.0 development build. Ragtime connects to data2g-host,
 chats on the D2G broadcast group. Current features include:
 - "Globus," which plots your friend's maidenhead coordinates
    on a globe,
@@ -55,9 +55,16 @@ notes, alongside the Broadcast tab and built-in Data2G modem.
 
 ![Ragtime on macOS with the ordered frequency selector menu](docs/images/readme/ragtime-macos.png)
 
+Use **View > Search** (Cmd+F) to search Broadcast and earlier sessions.
+The Search tab opens on request; the usual Broadcast, Session and Files tabs
+keep their order. Chat history is retained and loaded a page at a time, and
+older pictures decode in the background. Clear hides Broadcast messages
+across restarts while preserving the log: Search can explicitly review them;
+closing the search strip restores the cleared view.
+
 ## Downloads
 
-The current macOS release is 0.4.0 beta 4; published ZIP and DMG packages
+The current published macOS release is 0.4.0 beta 5; published ZIP and DMG packages
 are listed on the release page below. The macOS app bundles Data2G v0.5.3
 and sotto v3.8 for Apple Silicon with macOS 27 or later. Packages are ad hoc
 signed and have no Apple notarization.
@@ -97,12 +104,12 @@ On Fedora 44:
 ### macOS
 
 The integrated modem uses Data2G v0.5.3 plus upstream receiver and session fixes at commit
-`95c94b1c1b85edbdff6d1e6828d3087e67ccfeef`. Use a separate checkout for
+`6dafe77ad0a8b3f693fd3d7d6d5dc9883d25f092`. Use a separate checkout for
 this build. The bundled modem uses the HF profile; the experimental FM
 profile is not enabled. [Data2G v0.5.3](https://github.com/arodland/Data2G/releases/tag/v0.5.3)
 
     git clone https://github.com/arodland/Data2G.git ../Data2G-ragtime
-    git -C ../Data2G-ragtime checkout 95c94b1c1b85edbdff6d1e6828d3087e67ccfeef
+    git -C ../Data2G-ragtime checkout 6dafe77ad0a8b3f693fd3d7d6d5dc9883d25f092
 
 Install the build dependencies with Homebrew:
 

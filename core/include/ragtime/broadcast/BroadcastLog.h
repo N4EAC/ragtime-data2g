@@ -1,6 +1,8 @@
 // The Broadcast tab's lasting log: what was said on D2G, kept on disk so
 // the tab opens with what came before, greyed, a rule where Ragtime last
-// closed.
+// closed. It is kept for good: past its size the file is rolled into its
+// history folder (history/History.h), and the tab reads it back a page at
+// a time.
 //
 // One file, appended to as things happen, one line each, fields split by
 // tabs (text escaped as SessionLog's is):
@@ -33,6 +35,9 @@
 // finds a line of an earlier run too; one whose line was cut away is
 // skipped. Lines of kinds this reader doesn't know are skipped.
 //
+// A file rolled away is never written again, and the newest file always
+// starts at a run's B line.
+//
 // Not thread safe. Disk errors are ignored: the chat goes on without its
 // log rather than stop.
 #ifndef RAGTIME_BROADCAST_BROADCAST_LOG_H
@@ -44,6 +49,7 @@
 #include <vector>
 
 #include "ragtime/broadcast/BroadcastChat.h"
+#include "ragtime/history/History.h"
 
 namespace ragtime
 {
@@ -53,8 +59,8 @@ namespace broadcast
 class BroadcastLog
 {
 public:
-    // The file is cut back to its later half, at a run's start, once it
-    // grows past this.
+    // The file is rolled into its history folder, at a run's start, once
+    // it grows past this.
     static constexpr uint64_t MAX_FILE_BYTES = 1024 * 1024;
 
     // "" keeps nothing. Its folder is made when first written to.
@@ -68,6 +74,8 @@ public:
     // still Queued, Sending or Held when Ragtime closed comes back Not
     // sent. Ids are 0, for the caller to give.
     std::vector<Message> load(size_t max) const;
+    // The same a page at a time, from the newest, through the rolled files.
+    history::Pages<Message> history() const;
 
     void began(uint64_t nowMs);
     void cleared();
@@ -87,7 +95,6 @@ public:
 
 private:
     void append(const std::string& line);
-    void compact();
 
     std::string path_;
 };

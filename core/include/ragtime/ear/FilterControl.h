@@ -28,12 +28,28 @@
 // keyed and never while a burst is heard. Then it is on trial for KEEP_MS,
 // the clock beside Undo, and goes back unless the operator presses Keep.
 //
+// IF SHIFT (2026-11-26, for an FT-891 and its Yaesu cousins): a rig with
+// no PBT but IF SHIFT moves the whole passband by the shift, so
+//
+//     low  = centreHz - width / 2 + k * shift
+//     high = centreHz + width / 2 + k * shift
+//
+// with k about 1 (or -1 if the rig shifts the other way in a mode), kept
+// in KnobModel's hzPerKnob. Dragging the middle sets the shift; an edge
+// alone sets the width and the shift together, so the other edge stays,
+// each landing on the rig's own steps (its widths, 20 Hz of shift). Until
+// Calibrate has measured k and the real centre, as for PBT, only the
+// width and a shift taken as set.
+//
 // The notch (Jeff, 2026-10-26). Where the rig has a manual notch (Hamlib's
-// MN and NOTCHF_RAW), its bar is dragged into the spectrum to turn it on
-// there, and back to its bay (NF OFF) to turn it off. NOTCHF_RAW is a
-// position, 0 to 1, not Hz: ear::NotchModel turns one into the other,
+// MN), its bar is dragged into the spectrum to turn it on there, and back
+// to its bay (NF OFF) to turn it off. An Icom places it with NOTCHF_RAW,
+// a position, 0 to 1, not Hz: ear::NotchModel turns one into the other,
 // starting from an IC-7100 and learning from where the dip shows in
-// the noise (EdgeFinder::dip).
+// the noise (EdgeFinder::dip). Yaesu and Kenwood rigs have no NOTCHF_RAW
+// and take NOTCHF, the centre in Hz, which needs no model (2026-11-26:
+// an FT-891's notch went on wherever its own knob had left it, as only
+// NOTCHF_RAW was ever set).
 //
 // The time is always passed in, so tests run it on a simulated clock.
 #ifndef RAGTIME_EAR_FILTER_CONTROL_H
@@ -67,7 +83,8 @@ struct Span
 // not calibrated, the centre and width the Ear goes by.
 struct KnobModel
 {
-    double hzPerKnob = 0;   // an edge's move for a full turn; 0 not known
+    double hzPerKnob = 0;   // an edge's move for a full turn (for IF SHIFT,
+                            // per Hz of shift); 0 not known
     double centreHz = 0;    // the passband's centre with the knobs centred
     double widthHz = 0;     // its width then, at -6 dB
     double nominalHz = 0;   // the width the rig said then
@@ -119,14 +136,37 @@ struct NotchModel
     static std::optional<NotchModel> fromText(const std::string& text);
 };
 
+// Where a setting's notch is centred in the audio: the rig's own Hz
+// (NOTCHF), else its position (NOTCHF_RAW) through the model; none
+// from a rig that gives neither.
+std::optional<double> notchCentre(const RigFilter& f, const NotchModel& m);
 // Whether a notch at hz cuts into Data2G's passband.
 bool notchCutsData2G(double hz, bool narrow);
 // The notch's change, or empty: "Notch on at 1500 Hz", "Notch 1500 →
 // 1200 Hz", "Notch off".
 std::string notchChangeText(const RigFilter& from, const RigFilter& to, const NotchModel& m);
-// The notch on, centred at hz (off with none), the rest as it is.
+// The notch on, centred at hz (off with none), the rest as it is: in Hz,
+// to the nearest 10, for a rig that gives its notch in Hz and no
+// position, else as a position.
 RigFilter withNotch(const RigFilter& now, std::optional<double> hz, const NotchModel& m);
 
+// How the rig moves its passband: twin PBT (both knobs read), or IF SHIFT
+// on a rig without them.
+bool twinPbt(const RigFilter& f);
+bool ifShifts(const RigFilter& f);
+inline bool shifts(const RigFilter& f) { return twinPbt(f) || ifShifts(f); }
+// IF SHIFT's reach either side (an FT-891's and most Yaesus'), and its step.
+constexpr int IF_SHIFT_MAX_HZ = 1200;
+constexpr int IF_SHIFT_STEP_HZ = 20;
+// The width a calibration is kept under: the rig's for twin PBT (the
+// knobs' reach goes with it), 0 for IF SHIFT, whose model holds at every
+// width (an edge dragged alone changes the width each time).
+int calibrationWidth(const RigFilter& f);
+// The widths a rig's filter takes in a mode, narrowest first, where
+// Ragtime knows them: an FT-891's ("hamlib-1036", as Hamlib 4.7 sets
+// them: up to 3200 Hz in SSB, to 3000 in the data, CW and RTTY modes).
+// Empty for the rest, which round as an Icom does (roundWidth).
+std::vector<int> widthSteps(const std::string& rigKey, const std::string& mode);
 // A knob's shift in Hz, and back.
 double knobShift(std::optional<double> knob, double hzPerKnob);
 // The passband a setting gives: the filter's own, past any cut in the
@@ -152,25 +192,30 @@ Span dragTarget(const Span& from, const Span& to, const RigFilter& now, const Kn
 // stopping it near 4.4), and the next drag's move, taken from there, left
 // the passband several hundred Hz short.
 Span reached(const Span& from, const RigFilter& now, const RigFilter& to, const KnobModel& m);
-// A width the rig takes: 50 Hz steps to 500 Hz, then 100 Hz (an Icom's
-// steps; other rigs round as they will), at least 50 Hz.
-int roundWidth(double hz, bool up);
+// A width the rig takes: one of its steps where they are known (up, the
+// narrowest at least hz; else the nearest), else 50 Hz steps to 500 Hz,
+// then 100 Hz (an Icom's steps; other rigs round as they will), at least
+// 50 Hz.
+int roundWidth(double hz, bool up, const std::vector<int>& steps = {});
 // The setting for the passband wanted, from the setting now: the knobs
 // where they reach (hzPerKnob known and the rig has them), the width for
-// the rest. The mode stays.
-RigFilter settingFor(const Span& wanted, const RigFilter& now, const KnobModel& m);
+// the rest; with IF SHIFT, the width nearest the one wanted and the shift
+// that centres it. The mode stays.
+RigFilter settingFor(const Span& wanted, const RigFilter& now, const KnobModel& m,
+                     const std::vector<int>& steps = {});
 RigFilter settingFor(const Span& wanted, const RigFilter& now, double centreHz, double hzPerKnob);
 // Both knobs turned alike: the passband moves by hz and keeps its width,
-// stopping where either knob would run out. Needs both knobs; the rest of
-// the setting stays.
+// stopping where either knob would run out; or IF SHIFT moved by hz / k,
+// within its reach. Needs both knobs or IF SHIFT; the rest of the setting
+// stays.
 RigFilter shiftedBy(const RigFilter& now, double hz, double hzPerKnob);
 // Hz per knob before Calibrate has measured it: the filter's width, as Jeff's
 // IC-7100 showed (one full turn moves an edge one width). Only a guess,
 // so a shift made with it may land a little off; the edges in the noise
 // show where it went.
 double guessHzPerKnob(const RigFilter& f);
-// Disable (Jeff, 2026-10-26): the setting with the PBT centred and the
-// notch off, the mode and width as they are; and whether a setting has
+// Disable (Jeff, 2026-10-26): the setting with the PBT (or IF SHIFT)
+// centred and the notch off, the mode and width as they are; and whether a setting has
 // them so (a knob the rig hasn't counts as centred, a notch it hasn't as
 // off).
 RigFilter disabled(const RigFilter& now);
@@ -266,6 +311,9 @@ private:
 };
 
 // Calibrate: how far a knob's turn moves an edge, measured from the noise.
+// With IF SHIFT instead, the same five measures at a shift of 0, +200,
+// +400, -200 and -400 Hz, each pair moving both edges: the edge clear of
+// any cut gives k.
 // It measures the passband with both knobs centred, then with PBT_IN up by
 // STEP and by twice STEP, then PBT_IN back and PBT_OUT down by STEP and by
 // twice STEP, then puts the setting back. Each pair of turns moves one edge
@@ -283,6 +331,11 @@ class Calibration
 {
 public:
     static constexpr double STEP = 0.15;
+    static constexpr int IF_STEP_HZ = 200;
+    // A shift moving the passband by less or more than this, per Hz, is no
+    // IF SHIFT.
+    static constexpr double IF_LEAST = 0.5;
+    static constexpr double IF_MOST = 2.0;
     // The two turns must agree this well.
     static constexpr double AGREE = 0.3;
     // An edge moving less than this is no measure.
@@ -292,7 +345,7 @@ public:
     static constexpr int MEASURES = 5;
     static constexpr int PUT_BACK = MEASURES;
 
-    // Starts from the setting now, which must have both knobs.
+    // Starts from the setting now, which must have both knobs or IF SHIFT.
     bool start(const RigFilter& now);
     void cancel();
     bool running() const { return step_ >= 0 && step_ <= PUT_BACK; }
@@ -313,6 +366,7 @@ public:
 
 private:
     RigFilter original_;
+    bool ifShift_ = false;
     int step_ = -1;
     std::vector<Span> spans_;
     std::optional<KnobModel> result_;

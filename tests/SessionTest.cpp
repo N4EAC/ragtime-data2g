@@ -962,6 +962,70 @@ void testTheSessionPartnerOnTheStationList()
     CHECK_EQ(stations.status(*stations.find("G4XYZ"), T0 + 9000).word, std::string("QSO w/ W1AW"));
 }
 
+// A long history with a station shows its newest page, and older pages
+// come in front as the tab asks, back to the first session.
+void testHistoryByPages()
+{
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "ragtime-session-pages-test";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    session::SessionLog log(dir.string());
+    const size_t SESSIONS = 6, PER = 199;
+    uint64_t at = T0 - 30ull * 24 * 3600 * 1000;
+    for (size_t n = 0; n < SESSIONS; n++)
+    {
+        log.began("W1AW", at);
+        for (size_t i = 0; i < PER; i++)
+        {
+            session::Message m;
+            m.id = i + 1;
+            m.from = "W1AW";
+            m.atMs = at += 1000;
+            m.text = "said " + std::to_string(n * PER + i + 1);
+            log.added("W1AW", m);
+        }
+        log.ended("W1AW", at += 1000);
+    }
+
+    Rig rig;
+    rig.chat.setLog(&log);
+    Far far("W1AW");
+    connect(rig, far);
+    const auto& rows = rig.chat.messages();
+    CHECK_EQ(rows.size(), SessionChat::HISTORY_PAGE);
+    CHECK(rig.chat.olderInLog());
+    rig.chat.holdHistory(true);
+    size_t all = rows.size();
+    while (size_t n = rig.chat.loadOlder()) all += n;
+    CHECK_EQ(all, SESSIONS * (PER + 1));
+    CHECK_EQ(rows.size(), all);
+    CHECK(!rig.chat.olderInLog());
+    CHECK_EQ(rows.front().text, std::string("said 1"));
+    bool ordered = true;
+    for (size_t i = 1; i < rows.size(); i++) ordered = ordered && rows[i].atMs >= rows[i - 1].atMs;
+    CHECK(ordered);
+    rig.chat.holdHistory(false);
+    CHECK(rows.size() <= SessionChat::MAX_MESSAGES);
+
+    // Opened afresh, a line from the first session is found by loading
+    // pages through it; one that isn't there loads them all.
+    Rig again;
+    again.chat.setLog(&log);
+    Far far2("W1AW");
+    connect(again, far2);
+    const auto& rows2 = again.chat.messages();
+    CHECK_EQ(rows2.size(), SessionChat::HISTORY_PAGE);
+    uint64_t firstMs = rows.front().atMs;
+    size_t found = again.chat.loadThrough([&](const session::Message& m) { return m.atMs == firstMs; });
+    CHECK(found != SessionChat::NOT_FOUND);
+    CHECK(found < rows2.size() && rows2[found].text == "said 1");
+    CHECK(again.chat.loadThrough([](const session::Message& m) { return m.text == "never said"; })
+          == SessionChat::NOT_FOUND);
+    CHECK_EQ(rows2.size(), all);
+    again.chat.holdHistory(false);
+    std::filesystem::remove_all(dir, ec);
+}
+
 void testTheLogCarriesOn()
 {
     std::filesystem::path dir = std::filesystem::temp_directory_path() / "ragtime-session-history-test";
@@ -1222,6 +1286,7 @@ int main()
     testTheSessionPartnerOnTheStationList();
     testTheLengths();
     testTheLogCarriesOn();
+    testHistoryByPages();
     testTheSessionModeCarriesOver();
     testAnAckModeDoesntCarryOver();
     testReactionsInASession();

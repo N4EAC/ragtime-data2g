@@ -24,6 +24,7 @@
 #include "ChatList.h"
 #include "DrawnIcon.h"
 #include "GearshiftIcon.h"
+#include "FindStrip.h"
 #include "Html.h"
 #include "PhraseHighlight.h"
 #include "ReactionChips.h"
@@ -293,7 +294,7 @@ protected:
             owner_->onFileAction_(m->file, std::string(href.utf8_str()));
     }
 
-    wxString OnGetItemMarkup(size_t n) const override
+    wxString rowMarkup(size_t n) const override
     {
         return listText(OnGetItem(n), IsSelected(n));
     }
@@ -514,6 +515,15 @@ BroadcastPage::BroadcastPage(wxWindow* parent, const BroadcastChat& chat)
     , chat_(chat)
 {
     list_ = new MessageList(this);
+    // Scrolled near the top: the page of history before it.
+    list_->onNearTop([this]() {
+        if (!onLoadOlder_) return;
+        if (onHoldHistory_) onHoldHistory_(true);
+        size_t added = onLoadOlder_();
+        if (added == 0) return;
+        updateRows(added);
+        shownVersion_ = chat_.version();
+    });
     followThemeBackground(list_, wxSYS_COLOUR_LISTBOX);
     scrollbarBeside(list_);
     paused_ = new wxStaticText(this, wxID_ANY,
@@ -569,7 +579,23 @@ BroadcastPage::BroadcastPage(wxWindow* parent, const BroadcastChat& chat)
 
     clear_ = new wxButton(this, wxID_ANY, "Clear", wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
     clear_->SetToolTip("Hide earlier Broadcast messages across restarts. Queued messages and the saved log are kept.");
+    // After a jump from the Search tab: which hit shows, and the others.
+    find_ = new FindStrip(this);
+    find_->onClose([this]() {
+        reviewingHistory_ = false;
+        updateRows();
+    });
+    Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& e) {
+        if (e.GetKeyCode() == WXK_ESCAPE && find_->IsShown() && editing_ == 0)
+        {
+            find_->close();
+            return;
+        }
+        e.Skip();
+    });
+
     auto* sizer = new wxBoxSizer(wxVERTICAL);
+    sizer->Add(find_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(clear_, 0, wxALIGN_RIGHT | wxRIGHT | wxTOP, 6);
     sizer->Add(list_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(paused_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
@@ -802,6 +828,9 @@ void BroadcastPage::send()
 
 void BroadcastPage::clearView()
 {
+    reviewingHistory_ = false;
+    clearedHistory_ = true;
+    find_->close();
     // A late arrival can be placed above existing messages, so use the
     // highest ID rather than the last row's position or timestamp.
     for (const Message& message : chat_.messages())
@@ -813,6 +842,9 @@ void BroadcastPage::clearView()
 
 void BroadcastPage::refresh()
 {
+    // Old rows stay while the operator reads up there, and go once the
+    // list follows the newest again.
+    if (onHoldHistory_) onHoldHistory_(!list_->following());
     uint64_t seals = sealsVersion_ ? sealsVersion_() : 0;
     if (shownVersion_ == chat_.version() && shownSeals_ == seals) return;
     shownVersion_ = chat_.version();
@@ -820,8 +852,9 @@ void BroadcastPage::refresh()
     updateRows();
 }
 
-void BroadcastPage::updateRows()
+void BroadcastPage::updateRows(size_t added)
 {
+    const size_t previousCount = visibleRows_.size();
     using State = Message::State;
     const auto& messages = chat_.messages();
     visibleRows_.clear();
@@ -831,12 +864,33 @@ void BroadcastPage::updateRows()
         const auto& message = messages[row];
         const bool pending = message.ours && (message.state == State::Queued || message.state == State::Sending
                                               || message.state == State::Held);
-        const bool visible = !message.cleared && message.id > clearedThrough_;
+        const bool visible = reviewingHistory_
+                             || (!message.cleared && message.id > clearedThrough_
+                                 && !(clearedHistory_ && message.past));
         if (visible || pending) visibleRows_.push_back(row);
         if (visible && !pending) canClear = true;
     }
     clear_->Enable(canClear);
-    list_->showRows(visibleRows_.size());
+    if (added != 0 && visibleRows_.size() >= previousCount)
+        list_->showRowsAbove(visibleRows_.size(), visibleRows_.size() - previousCount);
+    else
+        list_->showRows(visibleRows_.size());
+}
+
+void BroadcastPage::showLine(size_t row)
+{
+    if (row >= chat_.messages().size()) return;
+    // Search can explicitly review cleared history without undoing Clear.
+    reviewingHistory_ = true;
+    list_->stopFollowing();
+    if (onHoldHistory_) onHoldHistory_(true);
+    updateRows();
+    auto found = std::find(visibleRows_.begin(), visibleRows_.end(), row);
+    if (found == visibleRows_.end()) return;
+    const size_t shown = static_cast<size_t>(found - visibleRows_.begin());
+    list_->SetSelection((int)shown);
+    list_->ScrollToRow(shown > 3 ? shown - 3 : 0);
+    list_->RefreshAll();
 }
 
 void BroadcastPage::refreshEdit()
@@ -846,7 +900,7 @@ void BroadcastPage::refreshEdit()
 
 void BroadcastPage::refreshVoices()
 {
-    list_->RefreshAll();
+    list_->refreshChanged();
 }
 
 void BroadcastPage::setGearLabel(const wxString& label, const wxString& tooltip, double bitsPerSecond)

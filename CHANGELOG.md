@@ -4,6 +4,22 @@ Changes to the Ragtime fork with bundled Data2G for macOS. Dates use
 America/New_York. Entries summarize this fork's packaged releases; the
 upstream projects retain their own histories.
 
+## Unreleased — 2026-11-26
+
+- Integrate upstream Ragtime through `b4ba6e5`: optional history Search,
+  read-only past sessions, retained/paged chat history and background picture decoding.
+- Add upstream FlexRadio network support and Ear controls for notch frequency,
+  IF SHIFT, and FT-891 filter widths; retain manual CAT entry and presets.
+- Include upstream seal/Hand-window scheduling and gearshift text fixes.
+- Update built-in Data2G HF to `6dafe77`: carrier-resistant BUSY detection,
+  CPM receiver improvements, robust session starts/disconnects and KISS compatibility fixes.
+- Retain sotto `e707134`, the upstream-recommended speech codec. Later sotto
+  commits add watermark tools and do not change the bundled speech codec.
+- Preserve persistent Clear across paged/rolled history and temporarily show
+  cleared history only for an explicit Search review. Queued messages remain visible.
+- Keep the bundled modem monitor, RX/TX Ear, audio devices, startup/icon,
+  plain About revisions, logs and macOS controls.
+
 ## 0.4.0 beta 5 — 2026-11-24
 
 - Update built-in Data2G to `95c94b1`, including carrier-aware CPM noise

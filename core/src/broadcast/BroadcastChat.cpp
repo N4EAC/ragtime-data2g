@@ -1645,9 +1645,16 @@ void BroadcastChat::ackHeard(uint64_t id, uint64_t nowMs)
 void BroadcastChat::setLog(BroadcastLog* log, uint64_t nowMs)
 {
     log_ = log;
-    if (log_ == nullptr) return;
+    if (log_ == nullptr)
+    {
+        pages_ = history::Pages<Message>();
+        return;
+    }
+    pages_ = log_->history();
     std::deque<Message> rows;
-    for (Message& m : log_->load(MAX_MESSAGES))
+    std::vector<Message> page = pages_.older(HISTORY_PAGE);
+    keepUnder(page);
+    for (Message& m : page)
     {
         m.id = nextId_++;
         // Heard again (a station re-sending it), it isn't listed twice.
@@ -1663,6 +1670,56 @@ void BroadcastChat::setLog(BroadcastLog* log, uint64_t nowMs)
         if (!m.past && m.kind != Message::Kind::Rule) log_->added(m);
     }
     version_++;
+}
+
+void BroadcastChat::keepUnder(std::vector<Message>& page)
+{
+    // A rule is never the list's first row: one heading the page goes
+    // back, to end the page before it.
+    size_t rules = 0;
+    while (rules < page.size() && page[rules].kind == Message::Kind::Rule) rules++;
+    if (rules == 0) return;
+    pages_.giveBack(std::vector<Message>(page.begin(), page.begin() + (std::ptrdiff_t)rules));
+    page.erase(page.begin(), page.begin() + (std::ptrdiff_t)rules);
+}
+
+size_t BroadcastChat::loadOlder()
+{
+    if (log_ == nullptr) return 0;
+    std::vector<Message> page = pages_.older(HISTORY_PAGE);
+    keepUnder(page);
+    for (auto it = page.rbegin(); it != page.rend(); ++it)
+    {
+        it->id = nextId_++;
+        if (it->kind == Message::Kind::Text && !it->ours) seen_.insert(ItemKey{it->from, it->seq, it->time});
+        messages_.push_front(std::move(*it));
+    }
+    if (!page.empty()) version_++;
+    return page.size();
+}
+
+size_t BroadcastChat::loadThrough(const std::function<bool(const Message&)>& match)
+{
+    for (size_t i = messages_.size(); i-- > 0;)
+        if (match(messages_[i])) return i;
+    for (;;)
+    {
+        holdHistory(true);
+        size_t came = loadOlder();
+        if (came == 0) return NOT_FOUND;
+        for (size_t i = came; i-- > 0;)
+            if (match(messages_[i])) return i;
+    }
+}
+
+void BroadcastChat::holdHistory(bool hold)
+{
+    if (hold == holdingHistory_) return;
+    holdingHistory_ = hold;
+    if (hold) return;
+    size_t before = messages_.size();
+    trim();
+    if (messages_.size() != before) version_++;
 }
 
 void BroadcastChat::closeLog(uint64_t nowMs)
@@ -1699,12 +1756,19 @@ std::deque<Message>::iterator BroadcastChat::placeFor(const Message& m)
 
 void BroadcastChat::trim()
 {
-    while (messages_.size() > MAX_MESSAGES
+    // The oldest go back to the log's pages, to come again when scrolled
+    // up to; a rule left first goes with them.
+    std::vector<Message> dropped;
+    while ((!holdingHistory_ && messages_.size() > MAX_MESSAGES)
            || (!messages_.empty() && messages_.front().kind == Message::Kind::Rule))
     {
         records_.erase(messages_.front().id);
+        Message m = std::move(messages_.front());
         messages_.pop_front();
+        m.past = true;
+        dropped.push_back(std::move(m));
     }
+    if (log_ != nullptr && !dropped.empty()) pages_.giveBack(std::move(dropped));
 }
 
 } // namespace broadcast

@@ -1,7 +1,9 @@
 #include "SessionPage.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <ctime>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +24,7 @@
 
 #include "ChatList.h"
 #include "DrawnIcon.h"
+#include "FindStrip.h"
 #include "Html.h"
 #include "PhraseHighlight.h"
 #include "Pictures.h"
@@ -146,7 +149,7 @@ public:
     const Message* at(size_t n) const
     {
         if (n >= owner_->items_.size() || owner_->items_[n].file) return nullptr;
-        const auto& all = owner_->session_.messages();
+        const auto& all = owner_->shownMessages();
         size_t index = owner_->items_[n].message;
         return index < all.size() ? &all[index] : nullptr;
     }
@@ -164,7 +167,7 @@ protected:
         std::vector<std::string> calls;
         if (const Message* m = at(row); m != nullptr && !m->from.empty()) calls.push_back(m->from);
         if (const FileTransfer* t = fileAt(row); t != nullptr && !t->peer.empty()) calls.push_back(t->peer);
-        if (!owner_->session_.peer().empty()) calls.push_back(owner_->session_.peer());
+        if (!owner_->shownPeer().empty()) calls.push_back(owner_->shownPeer());
         return calls;
     }
 
@@ -213,7 +216,7 @@ protected:
         owner_->CallAfter([owner, what, id]() { owner->onFileAction_(what, (uint64_t)id); });
     }
 
-    wxString OnGetItemMarkup(size_t n) const override
+    wxString rowMarkup(size_t n) const override
     {
         return listText(OnGetItem(n), IsSelected(n));
     }
@@ -226,7 +229,7 @@ protected:
         bool picked = IsSelected(n);
         // A session that has ended reads in grey, and so do the earlier
         // ones above it.
-        bool live = owner_->session_.active() && !m->past;
+        bool live = owner_->session_.active() && owner_->reviewCall_.empty() && !m->past;
         auto colour = [picked](const wxColour& c) {
             return picked ? wxString() : " color=\"" + htmlColour(c) + "\"";
         };
@@ -235,7 +238,7 @@ protected:
         if (m->kind == Message::Kind::Rule)
         {
             // Where an earlier session ended: the log carries on below.
-            std::string caption = "Session with " + owner_->session_.peer() + " ended "
+            std::string caption = "Session with " + owner_->shownPeer() + " ended "
                                   + std::string(clock(m->atMs).utf8_str());
             if (m->beganMs != 0 && m->atMs > m->beganMs) caption += DOT + sessionLength(m->atMs - m->beganMs);
             wxString html;
@@ -284,9 +287,9 @@ protected:
             if (!card.empty()) html << card;
         }
         // Its reactions, as chips under it.
+        bool canReact = owner_->reviewCall_.empty() && owner_->session_.canReact(*m);
         wxString chips = reactionChipsHtml(m->reactions, m->myReaction, m->myWaiting,
-                                           owner_->session_.settings().callsign, owner_->session_.canReact(*m), false,
-                                           picked);
+                                           owner_->session_.settings().callsign, canReact, false, picked);
         if (!chips.empty()) html << "<br>" << chips;
         html << "</td>"
              << "</tr></table>";
@@ -320,6 +323,25 @@ SessionPage::SessionPage(wxWindow* parent, const SessionChat& session, const rag
     strip_->SetSizer(stripSizer);
 
     list_ = new SessionMessages(this);
+    // Scrolled near the top: the page of the station's history before it.
+    list_->onNearTop([this]() {
+        const size_t before = items_.size();
+        if (!reviewCall_.empty())
+        {
+            if (reviewOlder() == 0) return;
+        }
+        else
+        {
+            if (!onLoadOlder_) return;
+            if (onHoldHistory_) onHoldHistory_(true);
+            if (onLoadOlder_() == 0) return;
+        }
+        shownVersion_ = session_.version();
+        shownFiles_ = files_.changes();
+        rebuild(nowMs_);
+        // The new rows are all older than any there: they came in front.
+        list_->showRowsAbove(items_.size(), items_.size() - std::min(before, items_.size()));
+    });
     followThemeBackground(list_, wxSYS_COLOUR_LISTBOX);
     scrollbarBeside(list_);
     paused_ = new wxStaticText(this, wxID_ANY,
@@ -386,8 +408,20 @@ SessionPage::SessionPage(wxWindow* parent, const SessionChat& session, const rag
     down->Bind(wxEVT_BUTTON, [queueAction](wxCommandEvent&) { queueAction("down"); });
     remove->Bind(wxEVT_BUTTON, [queueAction](wxCommandEvent&) { queueAction("cancel"); });
 
+    // After a jump from the Search tab: which hit shows, and the others.
+    find_ = new FindStrip(this);
+    Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& e) {
+        if (e.GetKeyCode() == WXK_ESCAPE && find_->IsShown())
+        {
+            find_->close();
+            return;
+        }
+        e.Skip();
+    });
+
     auto* sizer = new wxBoxSizer(wxVERTICAL);
     sizer->Add(strip_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
+    sizer->Add(find_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(list_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(queue_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(paused_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
@@ -427,7 +461,7 @@ SessionPage::SessionPage(wxWindow* parent, const SessionChat& session, const rag
         if (onLeaveNow_) onLeaveNow_();
     });
     callAgain_->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        if (onCallAgain_) onCallAgain_();
+        if (onCallAgain_) onCallAgain_(shownPeer());
     });
     list_->Bind(wxEVT_CONTEXT_MENU, [this](wxContextMenuEvent& e) {
         wxPoint at = list_->ScreenToClient(e.GetPosition());
@@ -442,11 +476,11 @@ SessionPage::SessionPage(wxWindow* parent, const SessionChat& session, const rag
         wxString tip;
         bool overBadge = e.GetPosition().x < list_->GetMargins().x + list_->FromDIP(BADGE_ROOM + 4);
         if (m != nullptr && m->kind == Message::Kind::Text && m->ours && overBadge)
-            tip = stateLine(*m, session_.peer());
+            tip = stateLine(*m, shownPeer());
         else if (m != nullptr && m->kind == Message::Kind::Text)
             tip = wxDateTime((time_t)m->time).FormatISOCombined(' ') + wxString::Format(", item %u", m->seq);
         else if (m != nullptr && m->kind == Message::Kind::File && m->checked && overBadge)
-            tip = checkedLine(m->ours, m->ours ? session_.peer() : m->from);
+            tip = checkedLine(m->ours, m->ours ? shownPeer() : m->from);
         if (t != nullptr && !t->path.empty()) tip = utf8(t->path);
         if (t != nullptr && t->checkedWhole() && overBadge) tip = checkedLine(t->outgoing, t->peer);
         list_->SetToolTip(tip);
@@ -468,13 +502,28 @@ void SessionPage::setVoiceDeckLit(bool lit)
 
 void SessionPage::refresh(uint64_t nowMs, long utcOffsetS)
 {
+    // A session starting, or being called, ends a review: the live one wins.
+    if (!reviewCall_.empty() && session_.active()) endReview();
+    const bool reviewing = !reviewCall_.empty();
+
     SessionChat::Strip strip = session_.strip(nowMs, utcOffsetS);
+    if (reviewing)
+    {
+        strip.text = "Earlier ragchews with " + reviewCall_ + DOT + "read only";
+        strip.live = false;
+        strip.amber = false;
+    }
+    // The words the typing line holds instead of typing: a lost session's,
+    // or a review's.
+    std::string words = reviewing ? reviewWords(reviewCall_) : strip.hint;
     int phase = (int)session_.phase();
-    if (strip.text != shownStrip_ || strip.amber != shownAmber_ || strip.hint != shownHint_ || phase != shownPhase_)
+    if (strip.text != shownStrip_ || strip.amber != shownAmber_ || words != shownHint_ || phase != shownPhase_
+        || reviewCall_ != shownReview_)
     {
         shownStrip_ = strip.text;
         shownAmber_ = strip.amber;
-        shownHint_ = strip.hint;
+        shownHint_ = words;
+        shownReview_ = reviewCall_;
         stripText_->SetLabel(wxString::FromUTF8(strip.text));
         stripText_->SetToolTip(wxString::FromUTF8(strip.text));
         // Amber when the link is quiet; a session that's up stands out from
@@ -493,31 +542,35 @@ void SessionPage::refresh(uint64_t nowMs, long utcOffsetS)
         cancel_->Show(p == Phase::Calling);
         leave_->Show(p == Phase::Connected);
         leaveNow_->Show(p == Phase::Leaving && !calling);
-        callAgain_->Show(p == Phase::Ended && !session_.peer().empty());
-        callAgain_->SetLabel("Call " + wxString::FromUTF8(session_.peer()) + " again");
+        callAgain_->Show(reviewing || (p == Phase::Ended && !session_.peer().empty()));
+        callAgain_->SetLabel(reviewing ? "Call " + wxString::FromUTF8(reviewCall_)
+                                       : "Call " + wxString::FromUTF8(session_.peer()) + " again");
         bool connected = p == Phase::Connected;
         // A lost link says so in the typing line itself, in bold red, where
         // the grey "No session" hint would be (Jeff, 2026-11-15). It is the
         // line's text, read-only, since a hint can't be coloured and a
         // disabled line greys its text; anything typed and not sent stays.
-        if (!strip.hint.empty() && !showingLost_ && compose_->IsEmpty())
+        // A review says so the same way, in grey (Jeff, 2026-11-25).
+        if (!words.empty() && (showingWords_ ? words != shownWords_ : compose_->IsEmpty()))
         {
-            compose_->ChangeValue(wxString::FromUTF8(strip.hint));
+            compose_->ChangeValue(wxString::FromUTF8(words));
             highlightPhrases(compose_, std::string(), {});
             compose_->SetFont(composeFont_.Bold());
             if (compose_->HasFocus()) list_->SetFocus();   // no caret blinking in words that can't be edited
-            showingLost_ = true;
+            showingWords_ = true;
+            shownWords_ = words;
         }
-        else if (strip.hint.empty() && showingLost_)
+        else if (words.empty() && showingWords_)
         {
             compose_->ChangeValue(wxString());
             compose_->SetFont(composeFont_);
             compose_->SetForegroundColour(wxNullColour);
-            showingLost_ = false;
+            showingWords_ = false;
+            shownWords_.clear();
         }
-        if (showingLost_) compose_->SetForegroundColour(badText());
+        if (showingWords_) compose_->SetForegroundColour(reviewing ? secondaryText() : badText());
         compose_->SetEditable(connected);
-        compose_->Enable(connected || showingLost_);
+        compose_->Enable(connected || showingWords_);
         send_->Enable(connected);
         sendFile_->Enable(connected);
         sendPicture_->Enable(connected);
@@ -539,6 +592,9 @@ void SessionPage::refresh(uint64_t nowMs, long utcOffsetS)
 
     nowMs_ = nowMs;
     utcOffsetS_ = utcOffsetS;
+    // Old rows stay while the operator reads up there, and go once the
+    // list follows the newest again.
+    if (onHoldHistory_) onHoldHistory_(!list_->following());
     if (shownVersion_ != session_.version() || shownFiles_ != files_.changes() || liveFiles_)
     {
         shownVersion_ = session_.version();
@@ -549,12 +605,116 @@ void SessionPage::refresh(uint64_t nowMs, long utcOffsetS)
     }
 }
 
+std::string SessionPage::reviewWords(const std::string& call)
+{
+    return "Read only: earlier ragchews with " + call + ". Call " + call + " to ragchew again.";
+}
+
+bool SessionPage::review(const std::string& call, ragtime::history::Pages<Message> pages)
+{
+    if (call.empty())
+    {
+        endReview();
+        return false;
+    }
+    std::string was = reviewCall_;
+    reviewCall_ = call;
+    reviewPages_ = std::move(pages);
+    review_.clear();
+    if (reviewOlder() == 0)
+    {
+        // Never ragchewed with: nothing to show, and no review.
+        reviewPages_ = ragtime::history::Pages<Message>();
+        if (was.empty())
+            reviewCall_.clear();
+        else
+            endReview();
+        return false;
+    }
+    shownVersion_ = ~0ull;      // rebuilt at once, from the review's rows
+    list_->SetSelection(wxNOT_FOUND);
+    list_->followNewest();
+    refresh(nowMs_, utcOffsetS_);
+    return true;
+}
+
+size_t SessionPage::reviewOlder()
+{
+    std::vector<Message> page = reviewPages_.older(SessionChat::HISTORY_PAGE);
+    // A rule is never the first row: one heading the page goes back, to
+    // end the page before it.
+    size_t rules = 0;
+    while (rules < page.size() && page[rules].kind == Message::Kind::Rule) rules++;
+    if (rules > 0)
+    {
+        reviewPages_.giveBack(std::vector<Message>(page.begin(), page.begin() + (std::ptrdiff_t)rules));
+        page.erase(page.begin(), page.begin() + (std::ptrdiff_t)rules);
+    }
+    for (auto it = page.rbegin(); it != page.rend(); ++it)
+    {
+        it->id = ++reviewId_;
+        review_.push_front(std::move(*it));
+    }
+    return page.size();
+}
+
+size_t SessionPage::findShown(const std::function<bool(const Message&)>& match) const
+{
+    const auto& messages = shownMessages();
+    for (size_t i = messages.size(); i-- > 0;)
+        if (match(messages[i])) return i;
+    return NOT_SHOWN;
+}
+
+size_t SessionPage::findThrough(const std::function<bool(const Message&)>& match)
+{
+    size_t index = findShown(match);
+    if (index != NOT_SHOWN || reviewCall_.empty()) return index;
+    // The review's older pages, each in front of the rows there: only the
+    // new ones need looking at.
+    for (size_t added = reviewOlder(); added > 0; added = reviewOlder())
+    {
+        shownVersion_ = ~0ull;
+        for (size_t i = added; i-- > 0;)
+            if (match(review_[i])) return i;
+    }
+    return NOT_SHOWN;
+}
+
+void SessionPage::showMessage(size_t index)
+{
+    // Read from up here: the rows above it stay.
+    list_->stopFollowing();
+    refresh(nowMs_, utcOffsetS_);
+    for (size_t row = 0; row < items_.size(); row++)
+    {
+        if (items_[row].file || items_[row].message != index) continue;
+        list_->SetSelection((int)row);
+        // A few lines of what led up to it above it.
+        list_->ScrollToRow(row > 3 ? row - 3 : 0);
+        list_->RefreshAll();
+        return;
+    }
+}
+
+void SessionPage::endReview()
+{
+    if (reviewCall_.empty()) return;
+    reviewCall_.clear();
+    review_.clear();
+    reviewPages_ = ragtime::history::Pages<Message>();
+    shownVersion_ = ~0ull;
+    list_->SetSelection(wxNOT_FOUND);
+    list_->followNewest();
+    refresh(nowMs_, utcOffsetS_);
+}
+
 void SessionPage::rebuild(uint64_t nowMs)
 {
     items_.clear();
     transfers_.clear();
     liveFiles_ = false;
-    const auto& messages = session_.messages();
+    const auto& messages = shownMessages();
     for (size_t i = 0; i < messages.size(); i++)
     {
         Item item;
@@ -568,7 +728,8 @@ void SessionPage::rebuild(uint64_t nowMs)
     const std::string& peer = session_.peer();
     uint64_t start = session_.connectedMs() != 0 ? session_.connectedMs() : session_.sinceMs();
     std::vector<Item> cards;
-    if (!peer.empty())
+    // A review has its files as lines from the log, and no cards.
+    if (!peer.empty() && reviewCall_.empty())
     {
         for (const FileTransfer& t : files_.files().transfers(nowMs))
         {
@@ -601,7 +762,7 @@ void SessionPage::refreshQueue()
         queued.push_back(t.id);
         names.Add(utf8(t.name + " (" + ragtime::files::sizeText(t.size) + ")"));
     }
-    bool show = !queued.empty() && !peer.empty();
+    bool show = !queued.empty() && !peer.empty() && reviewCall_.empty();
     if (queued != queued_)
     {
         uint64_t picked = 0;
@@ -773,7 +934,7 @@ wxString SessionPage::cardHtml(const FileTransfer& t, bool picked, const wxWindo
 
 void SessionPage::refreshVoices()
 {
-    list_->RefreshAll();
+    list_->refreshChanged();
 }
 
 void SessionPage::setPaused(bool paused, const wxString& why)
@@ -787,12 +948,12 @@ void SessionPage::setPaused(bool paused, const wxString& why)
 
 void SessionPage::focusCompose()
 {
-    if (compose_->IsEnabled() && !showingLost_) compose_->SetFocus();
+    if (compose_->IsEnabled() && !showingWords_) compose_->SetFocus();
 }
 
 void SessionPage::send()
 {
-    if (showingLost_) return;
+    if (showingWords_) return;
     std::string typed(compose_->GetValue().utf8_str());
     if (onSend_ && onSend_(typed)) compose_->Clear();
     compose_->SetFocus();
@@ -833,7 +994,8 @@ void SessionPage::showMenu(int row)
     }
     uint64_t id = m->id;
     wxString text = wxString::FromUTF8(m->text);
-    if (session_.canReact(*m))
+    const bool reviewing = !reviewCall_.empty();
+    if (!reviewing && session_.canReact(*m))
     {
         uint8_t current = m->myWaiting != 0 ? m->myWaiting : m->myReaction;
         menu.AppendSubMenu(reactionMenu(ID_REACT, current, false,
@@ -843,7 +1005,7 @@ void SessionPage::showMenu(int row)
                            "React");
         menu.AppendSeparator();
     }
-    else if (!m->ours && !m->past && m->kind == Message::Kind::Text
+    else if (!reviewing && !m->ours && !m->past && m->kind == Message::Kind::Text
              && session_.phase() == SessionChat::Phase::Connected && session_.greeted())
     {
         // Ragtime before 0.2.0 skips reactions: say so rather than send one.
@@ -851,7 +1013,7 @@ void SessionPage::showMenu(int row)
             ->Enable(false);
         menu.AppendSeparator();
     }
-    if (SessionChat::canResend(*m))
+    if (!reviewing && SessionChat::canResend(*m))
     {
         // Into the session that is up; greyed, saying why, when none is.
         bool connected = session_.phase() == SessionChat::Phase::Connected;

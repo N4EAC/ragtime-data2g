@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -209,13 +210,17 @@ std::string SessionLog::pathFor(const std::string& peer) const
 
 std::vector<Message> SessionLog::load(const std::string& peer, size_t max) const
 {
-    std::string path = pathFor(peer);
-    if (path.empty()) return {};
-    std::ifstream in(files::pathFromUtf8(path), std::ios::binary);
-    if (!in) return {};
-    std::ostringstream text;
-    text << in.rdbuf();
-    return parseSessionLog(text.str(), max);
+    std::vector<Message> rows = history(peer).older(max);
+    // Never a rule on top.
+    while (!rows.empty() && rows.front().kind == Kind::Rule) rows.erase(rows.begin());
+    return rows;
+}
+
+history::Pages<Message> SessionLog::history(const std::string& peer) const
+{
+    return history::Pages<Message>(
+        pathFor(peer), [](const std::string& text) { return parseSessionLog(text, SIZE_MAX); },
+        [](const Message& m) { return m.kind == Kind::Rule; });
 }
 
 void SessionLog::append(const std::string& peer, const std::string& line)
@@ -232,47 +237,9 @@ void SessionLog::append(const std::string& peer, const std::string& line)
     out << line << '\n';
 }
 
-void SessionLog::compact(const std::string& peer)
-{
-    std::string path = pathFor(peer);
-    if (path.empty()) return;
-    std::filesystem::path file = files::pathFromUtf8(path);
-    std::error_code ec;
-    uintmax_t size = std::filesystem::file_size(file, ec);
-    if (ec || size <= MAX_FILE_BYTES) return;
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return;
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(in, line)) lines.push_back(line);
-    in.close();
-    // Keep from the first session that begins in the later half.
-    uint64_t bytes = 0;
-    size_t from = lines.size();
-    for (size_t i = 0; i < lines.size(); i++)
-    {
-        if (bytes >= size / 2 && lines[i].compare(0, 2, "B\t") == 0)
-        {
-            from = i;
-            break;
-        }
-        bytes += lines[i].size() + 1;
-    }
-    std::filesystem::path temp = file;
-    temp += ".new";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        if (!out) return;
-        out << FIRST_LINE << '\n';
-        for (size_t i = from; i < lines.size(); i++) out << lines[i] << '\n';
-        if (!out) return;
-    }
-    std::filesystem::rename(temp, file, ec);
-}
-
 void SessionLog::began(const std::string& peer, uint64_t nowMs)
 {
-    compact(peer);
+    history::rollLog(pathFor(peer), MAX_FILE_BYTES, nowMs);
     append(peer, join({"B", std::to_string(nowMs)}));
 }
 

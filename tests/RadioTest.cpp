@@ -631,6 +631,9 @@ void filter()
     say(vfo, "get_level: currVFO PBT_IN\nRPRT -11\n", T0 + 20);
     CHECK_EQ(vfo.takeOutput(), std::string("+l currVFO PBT_OUT\n"));
     say(vfo, "get_level: currVFO PBT_OUT\nRPRT -11\n", T0 + 30);
+    // No PBT: IF SHIFT is asked; none here either.
+    CHECK_EQ(vfo.takeOutput(), std::string("+l currVFO IF\n"));
+    say(vfo, "get_level: currVFO IF\nRPRT -11\n", T0 + 35);
     // No manual notch: its position isn't asked.
     CHECK_EQ(vfo.takeOutput(), std::string("+u currVFO MN\n"));
     say(vfo, "get_func: currVFO MN\nRPRT -11\n", T0 + 40);
@@ -653,6 +656,7 @@ void filter()
     CHECK(all.find("PBT") == std::string::npos);
     CHECK(all.find("MN") == std::string::npos);
     CHECK(all.find("NOTCHF") == std::string::npos);
+    CHECK(all.find(" IF") == std::string::npos);
     CHECK(all.find("+m currVFO\n") != std::string::npos);
     CHECK(vfo.filter() && vfo.filter()->widthHz == 2400);
 
@@ -833,6 +837,115 @@ void filterSet()
 
 // A second write before the first is read back (an Undo at once): each
 // part goes against what was written, not the reading from before it.
+// A Yaesu through rigctld (2026-11-26, an FT-891): no PBT and no
+// NOTCHF_RAW, so its notch's centre is asked in Hz, "+l NOTCHF", and
+// set so, "L NOTCHF 1230", moved before it goes on.
+void filterYaesu()
+{
+    uint64_t t = T0;
+    DialReader dial;
+    dial.connected(t);
+    dial.takeOutput();
+    say(dial, "0\n", t);
+    CHECK_EQ(probe(dial, t), std::string("f\n"));
+    say(dial, "7074000\n", t);
+    dial.setFilterWatch(true, t);
+    CHECK_EQ(dial.takeOutput(), std::string("+m\n"));
+    say(dial, "get_mode:\nMode: USB\nPassband: 3000\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l PBT_IN\n"));
+    say(dial, "get_level: PBT_IN\nRPRT -11\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l PBT_OUT\n"));
+    say(dial, "get_level: PBT_OUT\nRPRT -11\n", t);
+    // No PBT: IF SHIFT.
+    CHECK_EQ(dial.takeOutput(), std::string("+l IF\n"));
+    say(dial, "get_level: IF\n0\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+u MN\n"));
+    say(dial, "get_func: MN\n0\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l NOTCHF_RAW\n"));
+    say(dial, "get_level: NOTCHF_RAW\nRPRT -11\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l NOTCHF\n"));
+    say(dial, "get_level: NOTCHF\n1500\nRPRT 0\n", t);
+    CHECK(dial.filter().has_value());
+    if (dial.filter())
+    {
+        CHECK(dial.filter()->notchOn == std::optional<bool>(false));
+        CHECK(!dial.filter()->notchRaw);
+        CHECK(dial.filter()->notchHz == std::optional<int>(1500));
+        CHECK(dial.filter()->ifShiftHz == std::optional<int>(0));
+    }
+    CHECK_EQ(dial.takeOutput(), std::string(""));
+
+    RigFilter f = *dial.filter();
+    f.notchOn = true;
+    f.notchHz = 1230;
+    t += 100;
+    dial.setFilter(f, t);
+    CHECK_EQ(dial.takeOutput(), std::string("L NOTCHF 1230\n"));
+    say(dial, "RPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("U MN 1\n"));
+    say(dial, "RPRT 0\n", t);
+    // Read back at once, the PBT and NOTCHF_RAW no more asked.
+    CHECK_EQ(dial.takeOutput(), std::string("+m\n"));
+    say(dial, "get_mode:\nMode: USB\nPassband: 3000\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l IF\n"));
+    say(dial, "get_level: IF\n0\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+u MN\n"));
+    say(dial, "get_func: MN\n1\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l NOTCHF\n"));
+    say(dial, "get_level: NOTCHF\n1230\nRPRT 0\n", t);
+    CHECK(dial.filter() && dial.filter()->notchOn == std::optional<bool>(true) &&
+          dial.filter()->notchHz == std::optional<int>(1230));
+
+    // Off before it moves; the same Hz is no move.
+    t += 100;
+    f.notchOn = false;
+    dial.setFilter(f, t);
+    CHECK_EQ(dial.takeOutput(), std::string("U MN 0\n"));
+    say(dial, "RPRT 0\n", t);
+    t += 100;
+    f.notchHz = 2000;
+    dial.setFilter(f, t);
+    std::string out = dial.takeOutput();
+    // The read-back after the first write may come first.
+    for (int i = 0; i < 8 && out != "L NOTCHF 2000\n"; i++)
+    {
+        if (out == "+m\n") say(dial, "get_mode:\nMode: USB\nPassband: 3000\nRPRT 0\n", t);
+        if (out == "+l IF\n") say(dial, "get_level: IF\n0\nRPRT 0\n", t);
+        if (out == "+u MN\n") say(dial, "get_func: MN\n0\nRPRT 0\n", t);
+        if (out == "+l NOTCHF\n") say(dial, "get_level: NOTCHF\n1230\nRPRT 0\n", t);
+        out = dial.takeOutput();
+    }
+    CHECK_EQ(out, std::string("L NOTCHF 2000\n"));
+    say(dial, "RPRT 0\n", t);
+
+    // IF SHIFT and the width together; the shift alone after.
+    t += 100;
+    f.widthHz = 2400;
+    f.ifShiftHz = -200;
+    dial.setFilter(f, t);
+    out = dial.takeOutput();
+    for (int i = 0; i < 8 && out != "M USB 2400\n"; i++)
+    {
+        if (out == "+m\n") say(dial, "get_mode:\nMode: USB\nPassband: 3000\nRPRT 0\n", t);
+        if (out == "+l IF\n") say(dial, "get_level: IF\n0\nRPRT 0\n", t);
+        if (out == "+u MN\n") say(dial, "get_func: MN\n0\nRPRT 0\n", t);
+        if (out == "+l NOTCHF\n") say(dial, "get_level: NOTCHF\n2000\nRPRT 0\n", t);
+        out = dial.takeOutput();
+    }
+    CHECK_EQ(out, std::string("M USB 2400\n"));
+    say(dial, "RPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("L IF -200\n"));
+    say(dial, "RPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+m\n"));
+    say(dial, "get_mode:\nMode: USB\nPassband: 2400\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l IF\n"));
+    say(dial, "get_level: IF\n-200\nRPRT 0\n", t);
+    say(dial, dial.takeOutput() == "+u MN\n" ? "get_func: MN\n0\nRPRT 0\n" : "", t);
+    say(dial, dial.takeOutput() == "+l NOTCHF\n" ? "get_level: NOTCHF\n2000\nRPRT 0\n" : "", t);
+    CHECK(dial.filter() && dial.filter()->ifShiftHz == std::optional<int>(-200) && dial.filter()->widthHz == 2400);
+    CHECK(dial.filterProblem().empty());
+}
+
 void filterSetTwice()
 {
     uint64_t t = T0;
@@ -954,7 +1067,7 @@ void onlyAsks()
 {
     const std::vector<std::string> allowed = {"\\chk_vfo", "f", "+l ALC", "+l SWR", "+l RFPOWER_METER_WATTS",
                                               "+l RFPOWER_METER", "+l STRENGTH", "+m", "+l PBT_IN", "+l PBT_OUT",
-                                              "+u MN", "+l NOTCHF_RAW"};
+                                              "+u MN", "+l NOTCHF_RAW", "+l NOTCHF", "+l IF"};
     DialReader dial;
     std::string all;
     uint64_t t = T0;
@@ -1283,6 +1396,7 @@ int main()
     strength();
     filter();
     filterSet();
+    filterYaesu();
     filterSetTwice();
     tune();
     onlyAsks();

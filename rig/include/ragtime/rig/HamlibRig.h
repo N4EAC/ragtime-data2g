@@ -84,6 +84,13 @@ struct BackendParam
 };
 std::vector<BackendParam> backendParams(int model);
 
+// Advice for a FlexRadio, added to a problem opening or reading it, or ""
+// for any other rig. Hamlib's FlexRadio 6xxx speaks SmartSDR CAT, the
+// Kenwood-like protocol of the ports SmartSDR CAT opens on a computer,
+// not the radio's own SmartSDR port, 4992: that is its SmartSDR Slice
+// models' (Hamlib 4.6 on), one model per slice, A to H.
+std::string flexAdvice(int model, const std::string& port);
+
 // The serial ports this computer has, for the port box: /dev/serial/by-id
 // names first, then /dev/ttyUSB* and /dev/ttyACM*; COM ports on Windows.
 std::vector<std::string> serialPorts();

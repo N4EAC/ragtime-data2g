@@ -6,6 +6,7 @@
 #include <iterator>
 #include <memory>
 #include <set>
+#include <utility>
 
 #include <wx/bitmap.h>
 #include <wx/brush.h>
@@ -18,6 +19,7 @@
 #include <wx/pen.h>
 #include <wx/window.h>
 
+#include "ragtime/files/SessionFiles.h"
 #include "ragtime/image/Codec.h"
 #include "ragtime/image/CoolChic.h"
 
@@ -120,6 +122,25 @@ bool decodePicture(const uint8_t* bytes, size_t length, Image& out, std::string&
     return ragtime::image::coolchicDecode(bytes, length, out, error);
 }
 
+bool pictureSize(const uint8_t* bytes, size_t length, int& width, int& height)
+{
+    width = height = 0;
+    if (ragtime::picture::isCodestream(bytes, length))
+    {
+        int comps = 0;
+        return ragtime::picture::codestreamSize(bytes, length, width, height, comps) && width > 0 && height > 0;
+    }
+    // Cool-chic's header is in its first few dozen bytes: fed only those,
+    // the decoder reads the shape and decodes nothing.
+    ragtime::image::coolchic::Decoder decoder;
+    decoder.feed(bytes, std::min<size_t>(length, 256));
+    const ragtime::image::coolchic::Architecture* arch = decoder.architecture();
+    if (arch == nullptr || arch->width <= 0 || arch->height <= 0) return false;
+    width = arch->width;
+    height = arch->height;
+    return true;
+}
+
 wxString pictureWildcard()
 {
     wxString kinds = "*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.tif;*.tiff;*.j2k;*.j2c;*.jpc;*.jp2";
@@ -195,6 +216,38 @@ bool PictureShelf::settled(const std::string& key) const
     return it != entries_.end() && it->second.settled;
 }
 
+void PictureShelf::shelve(const std::string& key, const Image& image, uint64_t size)
+{
+    Entry& e = entries_[key];
+    Shelved& s = e.shelved;
+    s.image = toWxImage(image);
+    s.width = image.width;
+    s.height = image.height;
+    s.bytes = s.size = size;
+    e.coolchic.reset();
+    e.settled = true;
+    // Shelved again after a release: the thumbnail made before still holds.
+    if (e.released) e.released = false;
+    else s.version++;
+}
+
+void PictureShelf::release(const std::string& key)
+{
+    auto it = entries_.find(key);
+    if (it == entries_.end()) return;
+    Entry& e = it->second;
+    if (!e.settled || e.memoryName.empty() || e.thumbStop || e.thumbVersion != e.shelved.version) return;
+    e.shelved.image = wxImage();
+    e.coolchic.reset();
+    e.released = true;
+}
+
+bool PictureShelf::released(const std::string& key) const
+{
+    auto it = entries_.find(key);
+    return it != entries_.end() && it->second.released;
+}
+
 const PictureShelf::Shelved* PictureShelf::find(const std::string& key) const
 {
     auto it = entries_.find(key);
@@ -220,12 +273,21 @@ wxString PictureShelf::thumbHtml(const std::string& key, const wxWindow* window,
                                  const wxString& stopHref)
 {
     auto it = entries_.find(key);
-    if (it == entries_.end() || !it->second.shelved.image.IsOk()) return wxString();
+    if (it == entries_.end()) return wxString();
     Entry& e = it->second;
+    const bool stop = !stopHref.empty();
+    if (e.released)
+    {
+        // Only the thumbnail is kept: as it was made.
+        if (stop || e.memoryName.empty()) return wxString();
+        wxString img = wxString::Format("<img src=\"memory:%s\" width=\"%d\" height=\"%d\">",
+                                        wxString(e.memoryName), e.thumbPx, e.thumbH);
+        return href.empty() ? img : "<a href=\"" + href + "\">" + img + "</a>";
+    }
+    if (!e.shelved.image.IsOk()) return wxString();
     const wxImage& full = e.shelved.image;
     int w = 0, h = 0;
     ragtime::picture::fitWithin(full.GetWidth(), full.GetHeight(), window->FromDIP(maxDip), w, h);
-    const bool stop = !stopHref.empty();
 
     if (e.thumbVersion != e.shelved.version || e.thumbPx != w || e.thumbStop != stop)
     {
@@ -239,6 +301,7 @@ wxString PictureShelf::thumbHtml(const std::string& key, const wxWindow* window,
         wxMemoryFSHandler::AddFile(e.memoryName, thumb, wxBITMAP_TYPE_PNG);
         e.thumbVersion = e.shelved.version;
         e.thumbPx = w;
+        e.thumbH = h;
         e.thumbStop = stop;
     }
     wxString img = wxString::Format("<img src=\"memory:%s\" width=\"%d\" height=\"%d\"", wxString(e.memoryName), w, h);
@@ -261,6 +324,89 @@ wxString PictureShelf::thumbHtml(const std::string& key, const wxWindow* window,
     img << ">";
     if (href.empty()) return img;
     return "<a href=\"" + href + "\">" + img + "</a>";
+}
+
+wxString PictureShelf::blankHtml(int width, int height, const wxWindow* window, int maxDip)
+{
+    int w = 0, h = 0;
+    ragtime::picture::fitWithin(width, height, window->FromDIP(maxDip), w, h);
+    if (w <= 0 || h <= 0) return wxString();
+    addMemoryHandlers();
+    // Clear, so it is only room: one file for each size, kept.
+    static std::set<std::pair<int, int>> made;
+    const wxString name = wxString::Format("ragtime-picture-blank-%dx%d.png", w, h);
+    if (made.insert({w, h}).second)
+    {
+        wxImage blank(w, h);
+        blank.InitAlpha();
+        std::fill(blank.GetAlpha(), blank.GetAlpha() + (size_t)w * h, (unsigned char)0);
+        wxMemoryFSHandler::AddFile(name, blank, wxBITMAP_TYPE_PNG);
+    }
+    return wxString::Format("<img src=\"memory:%s\" width=\"%d\" height=\"%d\">", name, w, h);
+}
+
+//-------------------------------------------------------------------------
+// PictureReader
+//-------------------------------------------------------------------------
+
+PictureReader::~PictureReader()
+{
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stop_ = true;
+    }
+    wake_.notify_all();
+    if (thread_.joinable()) thread_.join();
+}
+
+void PictureReader::read(const std::string& path)
+{
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!asked_.insert(path).second) return;
+        queue_.push_back(path);
+        if (!thread_.joinable()) thread_ = std::thread([this]() { run(); });
+    }
+    wake_.notify_one();
+}
+
+bool PictureReader::busy()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !asked_.empty() || !done_.empty();
+}
+
+std::vector<PictureReader::Done> PictureReader::take()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<Done> out;
+    out.swap(done_);
+    return out;
+}
+
+void PictureReader::run()
+{
+    while (true)
+    {
+        std::string path;
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            wake_.wait(lock, [this]() { return stop_ || !queue_.empty(); });
+            if (stop_) return;
+            path = queue_.front();
+            queue_.pop_front();
+        }
+        Done done;
+        done.path = path;
+        std::ifstream in(ragtime::files::pathFromUtf8(path), std::ios::binary);
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        std::string error;
+        done.size = bytes.size();
+        done.ok = !bytes.empty() && decodePicture(bytes.data(), bytes.size(), done.image, error);
+        std::lock_guard<std::mutex> lock(mutex_);
+        asked_.erase(path);
+        done_.push_back(std::move(done));
+    }
 }
 
 //-------------------------------------------------------------------------

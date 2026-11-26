@@ -1,11 +1,16 @@
 #ifndef RAGTIME_PICTURES_H
 #define RAGTIME_PICTURES_H
 
+#include <condition_variable>
 #include <cstdint>
 #include <cstddef>
+#include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <wx/gdicmn.h>
@@ -50,6 +55,11 @@ wxImage toWxImage(const ragtime::picture::Image& image);
 // docs/PICTURE_CODEC.md), told apart by the codestream's first marker.
 bool decodePicture(const uint8_t* bytes, size_t length, ragtime::picture::Image& out, std::string& error);
 
+// A picture's own size from its first bytes, without decoding it: a JPEG
+// 2000 codestream's SIZ, a Cool-chic stream's header. False if they don't
+// say.
+bool pictureSize(const uint8_t* bytes, size_t length, int& width, int& height);
+
 // The file dialog's wildcard for pictures Ragtime reads.
 wxString pictureWildcard();
 
@@ -77,6 +87,15 @@ public:
                 bool final = false);
     // Whole or final, and shown: nothing more to read for it.
     bool settled(const std::string& key) const;
+    // A picture decoded elsewhere (PictureReader), whole: shelved as
+    // settled, its thumbnail kept if it has one.
+    void shelve(const std::string& key, const ragtime::picture::Image& image, uint64_t size);
+    // Lets go of the decoded picture once its thumbnail is made, keeping the
+    // thumbnail (a past picture in the history: a thumbnail is a fraction
+    // of the picture, and viewing it reads the file again). find() is then
+    // null until it is shelved again.
+    void release(const std::string& key);
+    bool released(const std::string& key) const;
     const Shelved* find(const std::string& key) const;
     void forget(const std::string& key);
 
@@ -87,6 +106,11 @@ public:
     wxString thumbHtml(const std::string& key, const wxWindow* window, int maxDip, const wxString& href,
                        const wxString& stopHref = wxString());
 
+    // An empty box the size a width x height picture's thumbnail takes,
+    // for one still being read, so its row doesn't change height when the
+    // picture comes.
+    static wxString blankHtml(int width, int height, const wxWindow* window, int maxDip);
+
 private:
     struct Entry
     {
@@ -96,6 +120,8 @@ private:
         std::string memoryName;     // its thumbnail in wxHTML's memory files
         int thumbVersion = -1;
         int thumbPx = 0;
+        int thumbH = 0;
+        bool released = false;      // the picture let go of, the thumbnail kept
         bool thumbStop = false;
         wxRect stopRect;            // the stop button's, in the thumbnail
         // A Cool-chic picture's decoder, fed more as it comes: each feed
@@ -104,6 +130,44 @@ private:
     };
     std::map<std::string, Entry> entries_;
     int nextName_ = 1;
+};
+
+// Past pictures (in the chat history) read from disk and decoded on a
+// thread of its own, so scrolling through the history never waits on one:
+// a 640 by 480 Cool-chic picture takes some 180 ms to decode. One file at a
+// time, in the order asked; take() hands back those done.
+class PictureReader
+{
+public:
+    struct Done
+    {
+        std::string path;
+        ragtime::picture::Image image;
+        uint64_t size = 0;      // the file's bytes
+        bool ok = false;        // false: unreadable, or not a picture
+    };
+
+    PictureReader() = default;
+    ~PictureReader();
+    PictureReader(const PictureReader&) = delete;
+    PictureReader& operator=(const PictureReader&) = delete;
+
+    // Queued, unless it is already waiting or being read.
+    void read(const std::string& path);
+    // Waiting, being read, or done and not yet taken.
+    bool busy();
+    std::vector<Done> take();
+
+private:
+    void run();
+
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<std::string> queue_;
+    std::set<std::string> asked_;   // queued or being read
+    std::vector<Done> done_;
+    bool stop_ = false;
+    std::thread thread_;
 };
 
 // The stop button's side over a picture in a session's card.

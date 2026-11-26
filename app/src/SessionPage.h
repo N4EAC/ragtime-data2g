@@ -2,6 +2,7 @@
 #define RAGTIME_SESSION_PAGE_H
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <string>
@@ -12,6 +13,7 @@
 
 #include "FrontWindow.h"
 #include "ragtime/files/FileTraffic.h"
+#include "ragtime/history/History.h"
 #include "ragtime/session/SessionChat.h"
 
 class wxBoxSizer;
@@ -21,6 +23,7 @@ class wxListBox;
 class wxStaticText;
 class wxTextCtrl;
 class SessionMessages;
+class FindStrip;
 
 // The Session tab: the status strip
 // across the top with the one button the moment needs (Cancel while
@@ -29,6 +32,12 @@ class SessionMessages;
 // when the far end's modem has acknowledged it; and the line to type in.
 // With no session up the tab is greyed: the last session's messages stay
 // readable, and nothing can be typed.
+//
+// A station picked in Recent work, with no session up, shows here read
+// only (Jeff, 2026-11-25): its earlier ragchews from the session log,
+// greyed as an ended session is, with the words in the typing line where a
+// lost session puts its own, and a button to call it. A session starting
+// ends the review.
 //
 // Files (package G) show among the messages as cards: an offer to us with
 // Save, Save as..., Decline and its countdown, and "4,096 of 7,000 kept
@@ -55,7 +64,8 @@ public:
     void onCancel(std::function<void()> fn) { onCancel_ = std::move(fn); }
     void onLeave(std::function<void()> fn) { onLeave_ = std::move(fn); }
     void onLeaveNow(std::function<void()> fn) { onLeaveNow_ = std::move(fn); }
-    void onCallAgain(std::function<void()> fn) { onCallAgain_ = std::move(fn); }
+    // Call again pressed, or Call in a review: the station to call.
+    void onCallAgain(std::function<void(const std::string& call)> fn) { onCallAgain_ = std::move(fn); }
     // A callsign double-clicked in a line: the partner's, or a station
     // isStation knows named in the text.
     void onCallsign(std::function<void(const std::string& call)> fn,
@@ -64,6 +74,14 @@ public:
     void onResend(std::function<void(uint64_t id)> fn) { onResend_ = std::move(fn); }
     // A reaction picked on a message's menu or chip, with its palette code.
     void onReact(std::function<void(uint64_t id, uint8_t code)> fn) { onReact_ = std::move(fn); }
+    // The station's history: loadOlder puts the page before the first row
+    // in front and says how many came; hold keeps old rows while the list
+    // isn't following the newest.
+    void onHistory(std::function<size_t()> loadOlder, std::function<void(bool hold)> hold)
+    {
+        onLoadOlder_ = std::move(loadOlder);
+        onHoldHistory_ = std::move(hold);
+    }
     // Send file... pressed.
     void onSendFile(std::function<void()> fn) { onSendFile_ = std::move(fn); }
     // Inline pictures: the picture
@@ -119,6 +137,29 @@ public:
     void setPaused(bool paused, const wxString& why = wxString());
     void focusCompose();
 
+    // The earlier ragchews with call, read only, in place of the session's
+    // messages until endReview, or until a session starts: the newest page
+    // of its log's history, and the page before each time the list is
+    // scrolled near its top. False, and no review, when it has none.
+    bool review(const std::string& call, ragtime::history::Pages<ragtime::session::Message> pages);
+    void endReview();
+    // The station under review, or "" when none is.
+    const std::string& reviewing() const { return reviewCall_; }
+    // The words in the typing line during a review.
+    static std::string reviewWords(const std::string& call);
+
+    // For a jump from the Search tab: the index among the messages shown
+    // (the session's, or the review's) of the newest that match accepts,
+    // or NOT_SHOWN; findThrough pages a review back through its history
+    // until one does (a live session's is paged by SessionChat::loadThrough
+    // first); that message picked and in view, the list no longer
+    // following the newest; and the strip over the lines that goes with it.
+    static constexpr size_t NOT_SHOWN = ~(size_t)0;
+    size_t findShown(const std::function<bool(const ragtime::session::Message&)>& match) const;
+    size_t findThrough(const std::function<bool(const ragtime::session::Message&)>& match);
+    void showMessage(size_t index);
+    FindStrip* findStrip() { return find_; }
+
 private:
     friend class SessionMessages;
 
@@ -131,6 +172,15 @@ private:
         uint64_t atMs = 0;
     };
 
+    // What the list shows: the review's, or the session's.
+    const std::deque<ragtime::session::Message>& shownMessages() const
+    {
+        return reviewCall_.empty() ? session_.messages() : review_;
+    }
+    const std::string& shownPeer() const { return reviewCall_.empty() ? session_.peer() : reviewCall_; }
+
+    // The review's next page back, put in front: how many rows came.
+    size_t reviewOlder();
     void send();
     void showMenu(int row);
     void rebuild(uint64_t nowMs);
@@ -153,10 +203,17 @@ private:
     wxButton* leaveNow_ = nullptr;
     wxButton* callAgain_ = nullptr;
     SessionMessages* list_ = nullptr;
+    FindStrip* find_ = nullptr;
     wxStaticText* paused_ = nullptr;
     wxTextCtrl* compose_ = nullptr;
     wxFont composeFont_;
-    bool showingLost_ = false;      // the line holds the red "Session lost" words
+    bool showingWords_ = false;     // the line holds words, not typing: "Session lost", or a review's
+    std::string shownWords_;
+    std::string reviewCall_;        // the station under review, or ""
+    std::deque<ragtime::session::Message> review_;
+    ragtime::history::Pages<ragtime::session::Message> reviewPages_;  // the review's rows not yet shown
+    uint64_t reviewId_ = 0;         // the last id a review's row was given
+    std::string shownReview_;
     wxButton* send_ = nullptr;
     wxButton* sendFile_ = nullptr;
     wxButton* sendPicture_ = nullptr;
@@ -171,7 +228,8 @@ private:
     int shownPhase_ = -1;
 
     std::function<bool(const std::string&)> onSend_;
-    std::function<void()> onCancel_, onLeave_, onLeaveNow_, onCallAgain_, onSendFile_, onSendPicture_, onVoiceDeck_;
+    std::function<void()> onCancel_, onLeave_, onLeaveNow_, onSendFile_, onSendPicture_, onVoiceDeck_;
+    std::function<void(const std::string&)> onCallAgain_;
     std::function<wxString(uint64_t, const wxWindow*, const wxString&, const wxString&)> pictureHtml_;
     std::function<wxString(const std::string&, const wxWindow*, const wxString&)> pastPictureHtml_;
     std::function<wxString(const std::string&, const wxWindow*, bool)> voiceHtml_;
@@ -181,6 +239,8 @@ private:
     std::function<void(const std::string&, uint64_t)> onFileAction_;
     std::function<void(uint64_t)> onResend_;
     std::function<void(uint64_t, uint8_t)> onReact_;
+    std::function<size_t()> onLoadOlder_;
+    std::function<void(bool)> onHoldHistory_;
 };
 
 #endif

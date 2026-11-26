@@ -808,7 +808,7 @@ void Seals::sealIfDue(uint64_t nowMs)
             {
                 made.front().burst = id;
                 made.front().tries = 1;
-                handRound_ = HandRound{round.seal, round.channels, id};
+                handRound_ = HandRound{round.seal, round.channels, id, window.delayS, 0};
                 for (OurSeal& s : made) seals_.push_back(std::move(s));
                 version_++;
                 return;
@@ -1388,10 +1388,10 @@ void Seals::onEvent(const Event& event, uint64_t nowMs)
             heardRepairHand(event, nowMs);
             break;
         case Event::Type::HandEnd:
-            handRound_.reset();
+            handRoundOver(nowMs);
             break;
         case Event::Type::HandLost:
-            if (handRound_ && handRound_->burst == event.id) handRound_.reset();
+            if (handRound_ && handRound_->burst == event.id) handRoundOver(nowMs);
             break;
         case Event::Type::HandSent:
             if (!chat_.handWaiting()) ourHand_.reset();
@@ -1449,7 +1449,17 @@ void Seals::onEvent(const Event& event, uint64_t nowMs)
             s.sent = true;
             s.sentMs = nowMs;
             sealsSent_++;
-            windowEndsMs_ = std::max(windowEndsMs_, nowMs + listeningWindowMs(modeInfo(s.mode)));
+            uint64_t window = listeningWindowMs(modeInfo(s.mode));
+            // With a Hand window, the requests are the Hands: the window
+            // lasts until the host's is over, however fast the mode.
+            // Then the requests by burst, which wait for the Hands,
+            // a window more (HAND END sets it from the real end).
+            if (handRound_ && handRound_->burst == event.id)
+            {
+                handRound_->sentMs = nowMs;
+                window += handWindowMs(*handRound_);
+            }
+            windowEndsMs_ = std::max(windowEndsMs_, nowMs + window);
         }
         else if (s.tries < SEAL_TRIES)
         {
@@ -1550,7 +1560,12 @@ void Seals::onRecord(const protocol::Record& record, uint64_t nowMs)
     }
     else if (const protocol::SealRound* round = record.as<protocol::SealRound>())
     {
+        heardHandWindow(round->delayTenths, nowMs);
         answerSealRound(from, *round, nowMs);
+    }
+    else if (const protocol::RollCall* roll = record.as<protocol::RollCall>())
+    {
+        heardHandWindow(roll->delayTenths, nowMs);
     }
     else if (record.as<protocol::ItemParity>() != nullptr)
     {
@@ -1585,13 +1600,60 @@ void Seals::onRecord(const protocol::Record& record, uint64_t nowMs)
     }
 }
 
+uint64_t Seals::handWindowMs(const HandRound& round)
+{
+    return (uint64_t)std::ceil((round.delayS + link::HAND_SECONDS + link::HAND_SEARCH_S) * 1000.0);
+}
+
+void Seals::handRoundOver(uint64_t nowMs)
+{
+    if (handRound_ && handRound_->sentMs != 0)
+    {
+        const OurSeal* s = findSeal(handRound_->seal);
+        std::string mode = s != nullptr ? s->mode : mode_;
+        windowEndsMs_ = std::max(windowEndsMs_, nowMs + listeningWindowMs(modeInfo(mode)));
+    }
+    handRound_.reset();
+}
+
+void Seals::heardHandWindow(uint8_t delayTenths, uint64_t nowMs)
+{
+    // Heard as its burst ended, near enough: the window starts the delay
+    // after that.
+    uint64_t end = nowMs + (uint64_t)std::ceil((delayTenths / 10.0 + link::HAND_SECONDS + link::HAND_SEARCH_S) * 1000.0);
+    handsQuietUntilMs_ = std::max(handsQuietUntilMs_, end);
+}
+
+uint64_t Seals::askSpreadMs() const
+{
+    link::ModeInfo info = modeInfo(mode_);
+    uint64_t window = listeningWindowMs(info);
+    uint64_t own = (uint64_t)(oneCodewordSeconds(info) * 1000.0) + 2000;
+    return window > own + 1000 ? window - own : 1000;
+}
+
+bool Seals::handWindowOpen(uint64_t nowMs) const
+{
+    if (!handRound_ || handRound_->sentMs == 0) return false;
+    return nowMs < handRound_->sentMs + handWindowMs(*handRound_) + (uint64_t)(link::HAND_DECODE_MAX_S * 1000.0);
+}
+
 void Seals::tick(uint64_t nowMs)
 {
-    if (windowEndsMs_ != 0 && nowMs >= windowEndsMs_ && resendLast_ == 0)
+    // A Hand window whose HAND END never came is over all the same, so
+    // the next seal may have a round of its own.
+    if (handRound_ && handRound_->sentMs != 0 && !handWindowOpen(nowMs)) handRound_.reset();
+    // A window ends with requests to answer or none; while our Hand
+    // window is open, the Hands, our round's requests, are still to come
+    // (until the host's HAND END): deciding sooner would send the seal
+    // again into the host's hold, keyed the moment the Hands end, and
+    // leave the Hands for the round after (ragtime #185).
+    if (windowEndsMs_ != 0 && nowMs >= windowEndsMs_ && resendLast_ == 0 && !handWindowOpen(nowMs))
     {
         windowEndsMs_ = 0;
         // Requests start another round; a window with none ends the
-        // repairs, but for a file's seal, which goes again a time or two.
+        // repairs, but for a file's seal, which goes again FLUSH_REPEATS
+        // times.
         if (!asked_.empty() || !refusing_.empty())
             resend(nowMs);
         else
@@ -1623,7 +1685,17 @@ void Seals::tick(uint64_t nowMs)
     }
     for (auto& entry : stations_)
     {
-        if (entry.second.askAtMs != 0 && nowMs >= entry.second.askAtMs) ask(entry.first, entry.second, nowMs);
+        Station& station = entry.second;
+        if (station.askAtMs == 0 || nowMs < station.askAtMs) continue;
+        // Not over a Hand window's Hands: after it, at a random time
+        // within a listening window, as after a seal.
+        if (nowMs < handsQuietUntilMs_)
+        {
+            std::uniform_int_distribution<uint64_t> wait(0, askSpreadMs());
+            station.askAtMs = handsQuietUntilMs_ + wait(random_);
+            continue;
+        }
+        ask(entry.first, station, nowMs);
     }
     prune(nowMs);
     forget(nowMs);
@@ -1847,12 +1919,10 @@ void Seals::heardSeal(const std::string& call, const protocol::Record& record, u
     for (const ParityKey& key : keys) rebuildItems(call, station, key);
 
     // The window opens as the seal ends: ask at a random time within it,
-    // leaving room for our request's own airtime and the turn round.
-    link::ModeInfo info = modeInfo(mode_);
-    uint64_t window = listeningWindowMs(info);
-    uint64_t own = (uint64_t)(oneCodewordSeconds(info) * 1000.0) + 2000;
-    uint64_t spread = window > own + 1000 ? window - own : 1000;
-    armAsk(call, station, spread, nowMs);
+    // leaving room for our request's own airtime and the turn round. With
+    // a SealRound beside the seal, the wait starts after its Hand window
+    // instead (tick).
+    armAsk(call, station, askSpreadMs(), nowMs);
     version_++;
 }
 
