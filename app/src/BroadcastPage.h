@@ -79,6 +79,8 @@ void fillFileMenu(wxMenu& menu, const FileCard& card, int firstId, std::function
 // gone, is being repaired, or shows a station holds it. Theirs show only
 // whether they match their seal. Seals aren't signed until Stage 2, so a
 // badge never claims an identity.
+class FindStrip;
+
 class BroadcastPage : public wxPanel
 {
 public:
@@ -184,6 +186,11 @@ public:
     void refresh();
     // The fix strip's cost and countdown, each tick while a line is fixed.
     void refreshEdit();
+    // A line (an index into the chat's messages) picked and in view, for a
+    // jump from the Search tab; and the strip over the lines that goes
+    // with it.
+    void showLine(size_t row);
+    FindStrip* findStrip() { return find_; }
     void setGearLabel(const wxString& label, const wxString& tooltip, double bitsPerSecond = 0.0);
     // Pause sending shows a line saying so; with a reason (receive only,
     // outside the US data segments) the line gives it instead.
@@ -213,6 +220,7 @@ private:
 
     const ragtime::broadcast::BroadcastChat& chat_;
     MessageList* list_ = nullptr;
+    FindStrip* find_ = nullptr;
     wxStaticText* paused_ = nullptr;
     wxStaticText* editStrip_ = nullptr;
     uint64_t editing_ = 0;          // the line of ours being fixed

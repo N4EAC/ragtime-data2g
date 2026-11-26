@@ -7,6 +7,7 @@
 #include <ctime>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,6 +36,7 @@
 #include <wx/splitter.h>
 #include <wx/statusbr.h>
 #include <wx/stattext.h>
+#include <wx/textctrl.h>
 #include <wx/textdlg.h>
 #include <wx/tglbtn.h>
 #include <wx/utils.h>
@@ -60,6 +62,8 @@
 #include "RecentWorkPane.h"
 #include "Report.h"
 #include "RigControl.h"
+#include "FindStrip.h"
+#include "SearchPage.h"
 #include "SessionPage.h"
 #include "SettingsDialog.h"
 #include "StationList.h"
@@ -110,6 +114,7 @@ enum
     ID_TAB_BROADCAST,
     ID_TAB_SESSION,
     ID_TAB_FILES,
+    ID_SEARCH,
     ID_STATION_MESSAGE,
     ID_STATION_COPY,
     ID_CALL,
@@ -156,6 +161,7 @@ enum Tab
     TAB_BROADCAST,
     TAB_SESSION,
     TAB_FILES,
+    TAB_SEARCH,     // only while it is open
 };
 
 enum StatusField
@@ -499,6 +505,7 @@ void MainFrame::buildMenus()
     viewMenu_->Append(ID_TAB_BROADCAST, "&Broadcast\tCtrl+1");
     viewMenu_->Append(ID_TAB_SESSION, "&Session\tCtrl+2");
     viewMenu_->Append(ID_TAB_FILES, "&Files\tCtrl+3");
+    viewMenu_->Append(ID_SEARCH, "Sea&rch...\tCtrl+F", "Finds words in every Broadcast line and every ragchew kept");
 
     auto* settings = new wxMenu;
     settings->Append(ID_STATION_SETTINGS, "&Station...\tCtrl+,");
@@ -577,6 +584,7 @@ void MainFrame::buildMenus()
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { tabs_->SetSelection(TAB_BROADCAST); }, ID_TAB_BROADCAST);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { tabs_->SetSelection(TAB_SESSION); }, ID_TAB_SESSION);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { tabs_->SetSelection(TAB_FILES); }, ID_TAB_FILES);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { openSearch(); }, ID_SEARCH);
     Bind(wxEVT_MENU, [this](wxCommandEvent& e) { stationList_->toggleColumn(e.GetId()); },
          StationList::ID_COLUMN_FIRST, StationList::ID_COLUMN_FIRST + broadcast::COLUMN_COUNT - 1);
     Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& e) {
@@ -654,6 +662,9 @@ void MainFrame::buildLayout()
     tabs_->AddPage(sessionPage_, wxString::FromUTF8("Session \xc2\xb7 none"));
     filesPage_ = new FilesPage(tabs_, history_);
     tabs_->AddPage(filesPage_, "Files");
+    // The Search tab is made now and put on the strip only while open.
+    searchPage_ = new SearchPage(tabs_);
+    searchPage_->Hide();
     canStyleTabs_ = styleTab(tabs_, TAB_SESSION, false, true);
     sessionStyle_ = 2;
     auto* middleSizer = new wxBoxSizer(wxVERTICAL);
@@ -765,6 +776,16 @@ void MainFrame::buildLayout()
         reviewSession(call);
     });
     recent_->onActivate([this](const std::string& call) { openSession(call); });
+
+    // The Search tab: the logs on disk, with their rolled history.
+    searchPage_->sources([this]() { return search::historySources(broadcastLog_.path(), sessionLog_.folder()); });
+    searchPage_->onJump([this](const search::Hit& hit) { jumpToHit(hit); });
+    searchPage_->onClose([this]() { closeSearch(); });
+    for (FindStrip* strip : {broadcast_->findStrip(), sessionPage_->findStrip()})
+    {
+        strip->onStep([this](int step) { stepHit(step); });
+        strip->onBack([this]() { backToSearch(); });
+    }
     recent_->onMenu([this](const std::string& call) { stationMenu(call); });
     recent_->onOrder([this](radio::WorkOrder order) {
         recentOrder_ = order;
@@ -1645,6 +1666,160 @@ void MainFrame::reviewSession(const std::string& call)
     sessionPage_->review(them, std::move(kept));
     tabs_->SetSelection(TAB_SESSION);
     updateTabLabels();
+}
+
+bool MainFrame::searchOpen() const
+{
+    return tabs_->GetPageCount() > TAB_SEARCH;
+}
+
+std::vector<std::string> MainFrame::searchStations() const
+{
+    std::set<std::string> calls;
+    for (const broadcast::Station& st : stations_.stations()) calls.insert(st.call);
+    for (const search::Source& source : search::historySources(std::string(), sessionLog_.folder()))
+        calls.insert(source.peer);
+    return std::vector<std::string>(calls.begin(), calls.end());
+}
+
+void MainFrame::openSearch()
+{
+    // Words picked in a typing line are the first search.
+    wxString words;
+    if (auto* text = dynamic_cast<wxTextCtrl*>(FindFocus()))
+    {
+        wxString picked = text->GetStringSelection();
+        picked.Trim(true).Trim(false);
+        if (!picked.empty() && picked.length() <= 60 && !picked.Contains("\n")) words = picked;
+    }
+    if (!searchOpen())
+    {
+        tabBeforeSearch_ = tabs_->GetSelection();
+        // GTK leaves a hidden page's tab off the strip.
+        searchPage_->Show();
+        tabs_->AddPage(searchPage_, "Search");
+    }
+    else if (tabs_->GetSelection() != TAB_SEARCH)
+        tabBeforeSearch_ = tabs_->GetSelection();
+    searchPage_->setStations(searchStations());
+    tabs_->SetSelection(TAB_SEARCH);
+    placeTabToggle();
+    searchPage_->begin(words);
+}
+
+void MainFrame::backToSearch()
+{
+    if (!searchOpen())
+    {
+        openSearch();
+        return;
+    }
+    tabs_->SetSelection(TAB_SEARCH);
+}
+
+void MainFrame::closeSearch()
+{
+    if (!searchOpen()) return;
+    int back = tabBeforeSearch_;
+    tabBeforeSearch_ = -1;
+    tabs_->RemovePage(TAB_SEARCH);
+    searchPage_->Hide();
+    broadcast_->findStrip()->close();
+    sessionPage_->findStrip()->close();
+    if (back >= 0 && back < TAB_SEARCH) tabs_->SetSelection((size_t)back);
+    placeTabToggle();
+}
+
+std::vector<size_t> MainFrame::hitsAlongside(const search::Hit& hit, size_t& at) const
+{
+    const std::vector<search::Hit>& hits = searchPage_->hits();
+    std::vector<size_t> same;
+    for (size_t i = 0; i < hits.size(); i++)
+        if (search::samePlace(hits[i], hit)) same.push_back(i);
+    std::stable_sort(same.begin(), same.end(), [&hits](size_t a, size_t b) { return hits[a].atMs < hits[b].atMs; });
+    at = same.size();
+    for (size_t k = 0; k < same.size(); k++)
+    {
+        const search::Hit& h = hits[same[k]];
+        if (h.atMs == hit.atMs && h.seq == hit.seq && h.from == hit.from) at = k;
+    }
+    return same;
+}
+
+void MainFrame::stepHit(int step)
+{
+    size_t at = 0;
+    std::vector<size_t> same = hitsAlongside(lastJump_, at);
+    if (at >= same.size()) return;
+    long next = (long)at + step;
+    if (next < 0 || (size_t)next >= same.size()) return;
+    searchPage_->pick(same[(size_t)next]);
+    jumpToHit(searchPage_->hits()[same[(size_t)next]]);
+}
+
+void MainFrame::jumpToHit(const search::Hit& hit)
+{
+    lastJump_ = hit;
+    size_t at = 0;
+    std::vector<size_t> same = hitsAlongside(hit, at);
+    wxString words = searchPage_->typed();
+    words.Trim(true).Trim(false);
+    auto label = [&](const char* where) {
+        return wxString::FromUTF8("\xe2\x80\x9c") + words + wxString::FromUTF8("\xe2\x80\x9d: ")
+               + wxString::Format("%zu of %zu ", at < same.size() ? at + 1 : 1, std::max<size_t>(same.size(), 1)) + where;
+    };
+    bool earlier = at < same.size() && at > 0;
+    bool later = at + 1 < same.size();
+
+    if (hit.place == search::Place::Broadcast)
+    {
+        const auto& all = chat_.messages();
+        size_t row = all.size();
+        for (size_t i = all.size(); i-- > 0;)
+        {
+            const broadcast::Message& m = all[i];
+            if (m.atMs == hit.atMs && m.from == hit.from && m.seq == hit.seq)
+            {
+                row = i;
+                break;
+            }
+        }
+        if (row == all.size())
+        {
+            searchPage_->setNote("That line is older than the Broadcast tab holds now.");
+            return;
+        }
+        searchPage_->setNote(wxString());
+        sessionPage_->findStrip()->close();
+        tabs_->SetSelection(TAB_BROADCAST);
+        broadcast_->showLine(row);
+        broadcast_->findStrip()->showHit(label("on Broadcast"), earlier, later);
+        return;
+    }
+
+    std::string peer = protocol::normalCallsign(hit.peer);
+    if (peer.empty()) peer = hit.peer;
+    if (session_.active() && session_.peer() != peer)
+    {
+        searchPage_->setNote(wxString::Format(
+            "A ragchew with %s is up, so the Session tab is its until you Leave. The line shows below.",
+            wxString::FromUTF8(session_.peer())));
+        return;
+    }
+    if (!session_.active() && sessionPage_->reviewing() != peer) reviewSession(peer);
+    size_t index = sessionPage_->findShown([&hit](const session::Message& m) {
+        return m.atMs == hit.atMs && m.from == hit.from && m.seq == hit.seq;
+    });
+    if (index == SessionPage::NOT_SHOWN)
+    {
+        searchPage_->setNote("That line is older than the Session tab holds now.");
+        return;
+    }
+    searchPage_->setNote(wxString());
+    broadcast_->findStrip()->close();
+    tabs_->SetSelection(TAB_SESSION);
+    sessionPage_->showMessage(index);
+    sessionPage_->findStrip()->showHit(label("in this ragchew"), earlier, later);
 }
 
 void MainFrame::endReview()

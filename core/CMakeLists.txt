@@ -45,6 +45,8 @@ add_library(ragtime_core STATIC
     src/session/SessionChat.cpp
     src/session/StreamLog.cpp
     src/session/SessionLog.cpp
+    # Searching the Broadcast and session logs (the Search tab, Ctrl+F).
+    src/search/HistorySearch.cpp
     # The radio's dial from rigctld (read only), the US data segments, and
     # the path log: src/radio/.
     src/radio/Bands.cpp

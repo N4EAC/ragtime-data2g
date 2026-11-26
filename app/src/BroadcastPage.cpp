@@ -24,6 +24,7 @@
 #include "ChatList.h"
 #include "DrawnIcon.h"
 #include "GearshiftIcon.h"
+#include "FindStrip.h"
 #include "Html.h"
 #include "PhraseHighlight.h"
 #include "ReactionChips.h"
@@ -565,7 +566,19 @@ BroadcastPage::BroadcastPage(wxWindow* parent, const BroadcastChat& chat)
     row_->Add(buttons_, 0, wxEXPAND);
     under_ = new wxBoxSizer(wxHORIZONTAL);
 
+    // After a jump from the Search tab: which hit shows, and the others.
+    find_ = new FindStrip(this);
+    Bind(wxEVT_CHAR_HOOK, [this](wxKeyEvent& e) {
+        if (e.GetKeyCode() == WXK_ESCAPE && find_->IsShown() && editing_ == 0)
+        {
+            find_->close();
+            return;
+        }
+        e.Skip();
+    });
+
     auto* sizer = new wxBoxSizer(wxVERTICAL);
+    sizer->Add(find_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(list_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(paused_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
     sizer->Add(editStrip_, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, 6);
@@ -802,6 +815,16 @@ void BroadcastPage::refresh()
     shownVersion_ = chat_.version();
     shownSeals_ = seals;
     list_->showRows(chat_.messages().size());
+}
+
+void BroadcastPage::showLine(size_t row)
+{
+    refresh();
+    if (row >= list_->GetItemCount()) return;
+    list_->SetSelection((int)row);
+    // A few lines of what led up to it above it.
+    list_->ScrollToRow(row > 3 ? row - 3 : 0);
+    list_->RefreshAll();
 }
 
 void BroadcastPage::refreshEdit()
