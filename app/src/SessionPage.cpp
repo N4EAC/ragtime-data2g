@@ -214,7 +214,7 @@ protected:
         owner_->CallAfter([owner, what, id]() { owner->onFileAction_(what, (uint64_t)id); });
     }
 
-    wxString OnGetItemMarkup(size_t n) const override
+    wxString rowMarkup(size_t n) const override
     {
         return listText(OnGetItem(n), IsSelected(n));
     }
@@ -825,7 +825,7 @@ wxString SessionPage::cardHtml(const FileTransfer& t, bool picked, const wxWindo
 
 void SessionPage::refreshVoices()
 {
-    list_->RefreshAll();
+    list_->refreshChanged();
 }
 
 void SessionPage::setPaused(bool paused, const wxString& why)
