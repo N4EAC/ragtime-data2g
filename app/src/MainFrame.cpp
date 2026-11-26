@@ -660,7 +660,8 @@ void MainFrame::buildLayout()
     middle_ = new wxPanel(inner_);
     tabs_ = new wxNotebook(middle_, wxID_ANY);
     broadcast_ = new BroadcastPage(tabs_, chat_);
-    // Tab order is fixed: Broadcast, Session, Files (CLAUDE.md).
+    // Broadcast, Session, Files, in that order; Search follows them while
+    // it is open (CLAUDE.md).
     tabs_->AddPage(broadcast_, "Broadcast", true);
     sessionPage_ = new SessionPage(tabs_, session_, fileTraffic_);
     tabs_->AddPage(sessionPage_, wxString::FromUTF8("Session \xc2\xb7 none"));
