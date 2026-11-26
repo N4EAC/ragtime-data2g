@@ -4059,7 +4059,7 @@ std::optional<double> MainFrame::filterWidthHz() const
     // PBT as the Ear draws it (with Calibrate's model, if there is one).
     const std::optional<radio::RigFilter> f = rig_->filter();
     if (!f || f->widthHz <= 0 || ear::fmMode(f->mode)) return std::nullopt;
-    const ear::KnobModel model = loadEarCalibration(rig_->rigKey(), f->mode, f->widthHz)
+    const ear::KnobModel model = loadEarCalibration(rig_->rigKey(), f->mode, ear::calibrationWidth(*f))
                                      .value_or(ear::KnobModel::about(0, *f));
     const double width = ear::spanOf(*f, model).width();
     if (width <= 0) return std::nullopt;
@@ -4353,6 +4353,7 @@ void MainFrame::setRigFilter(const radio::RigFilter& f, const std::string& why)
     std::string said = "rig filter set " + f.mode + " " + std::to_string(f.widthHz) + " Hz";
     if (f.pbtIn) said += " PBT_IN " + radio::pbtText(*f.pbtIn);
     if (f.pbtOut) said += " PBT_OUT " + radio::pbtText(*f.pbtOut);
+    if (f.ifShiftHz) said += " " + radio::ifShiftText(f);
     if (f.notchOn) said += " " + radio::notchText(f);
     host_->recorder().note(said + " (" + why + ")", HostConnection::nowMs());
     rig_->setFilter(f);
@@ -4368,6 +4369,7 @@ void MainFrame::onDial()
         said = "rig filter " + filter->mode + " " + std::to_string(filter->widthHz) + " Hz";
         if (filter->pbtIn) said += " PBT_IN " + radio::pbtText(*filter->pbtIn);
         if (filter->pbtOut) said += " PBT_OUT " + radio::pbtText(*filter->pbtOut);
+        if (filter->ifShiftHz) said += " " + radio::ifShiftText(*filter);
         if (filter->notchOn) said += " " + radio::notchText(*filter);
         // While the Ear is open its filter bar hands on each new reading.
         // Here, with every dial update, the last reading would come again

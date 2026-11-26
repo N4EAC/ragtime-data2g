@@ -129,6 +129,38 @@ RigFilter withNotch(const RigFilter& now, std::optional<double> hz, const NotchM
     return out;
 }
 
+bool twinPbt(const RigFilter& f)
+{
+    return f.pbtIn && f.pbtOut;
+}
+
+bool ifShifts(const RigFilter& f)
+{
+    return !twinPbt(f) && f.ifShiftHz.has_value();
+}
+
+int calibrationWidth(const RigFilter& f)
+{
+    return ifShifts(f) ? 0 : f.widthHz;
+}
+
+std::vector<int> widthSteps(const std::string& rigKey, const std::string& mode)
+{
+    // An FT-891 (Hamlib's model 1036): the widths it takes, which Hamlib
+    // rounds a width up to.
+    if (rigKey == "hamlib-1036")
+    {
+        if (mode == "USB" || mode == "LSB")
+            return {200,  400,  600,  850,  1100, 1350, 1500, 1650, 1800, 1950, 2100,
+                    2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3200};
+        if (mode == "PKTUSB" || mode == "PKTLSB" || mode == "CW" || mode == "CWR" || mode == "RTTY" ||
+            mode == "RTTYR")
+            return {50,  100, 150, 200, 250, 300,  350,  400,  450,
+                    500, 800, 1200, 1400, 1700, 2000, 2400, 3000};
+    }
+    return {};
+}
+
 double knobShift(std::optional<double> knob, double hzPerKnob)
 {
     return knob ? hzPerKnob * (*knob - 0.5) : 0.0;
@@ -164,7 +196,9 @@ std::optional<KnobModel> KnobModel::fromText(const std::string& text)
 
 Span spanOf(const RigFilter& f, const KnobModel& m)
 {
-    const double in = knobShift(f.pbtIn, m.hzPerKnob), out = knobShift(f.pbtOut, m.hzPerKnob);
+    // IF SHIFT moves both edges alike, as both knobs turned together.
+    const double shift = ifShifts(f) ? m.hzPerKnob * *f.ifShiftHz : 0.0;
+    const double in = knobShift(f.pbtIn, m.hzPerKnob) + shift, out = knobShift(f.pbtOut, m.hzPerKnob) + shift;
     // The real width follows the rig's, as it was when measured.
     const double width = f.widthHz + (m.widthHz - m.nominalHz);
     Span s;
@@ -212,32 +246,56 @@ Span reached(const Span& from, const RigFilter& now, const RigFilter& to, const 
 
 double centreOf(const Span& measured, const RigFilter& f, double hzPerKnob)
 {
-    return measured.centre() - (knobShift(f.pbtIn, hzPerKnob) + knobShift(f.pbtOut, hzPerKnob)) / 2;
+    const double shift = ifShifts(f) ? hzPerKnob * *f.ifShiftHz : 0.0;
+    return measured.centre() - (knobShift(f.pbtIn, hzPerKnob) + knobShift(f.pbtOut, hzPerKnob)) / 2 - shift;
 }
 
-int roundWidth(double hz, bool up)
+int roundWidth(double hz, bool up, const std::vector<int>& steps)
 {
+    if (!steps.empty())
+    {
+        if (up)
+        {
+            for (int w : steps)
+                if (w >= hz - 1e-9) return w;
+            return steps.back();
+        }
+        int best = steps.front();
+        for (int w : steps)
+            if (std::fabs(w - hz) < std::fabs(best - hz)) best = w;
+        return best;
+    }
     hz = std::max(50.0, hz);
     const double step = hz <= 500 ? 50.0 : 100.0;
     const double n = up ? std::ceil(hz / step - 1e-9) : std::round(hz / step);
     return std::max(50, (int)(n * step));
 }
 
-RigFilter settingFor(const Span& wanted, const RigFilter& now, const KnobModel& m)
+RigFilter settingFor(const Span& wanted, const RigFilter& now, const KnobModel& m, const std::vector<int>& steps)
 {
     RigFilter out = now;
     const double want = std::max(50.0, wanted.width());
     // The rig's widths are nominal: what it passes is this much more.
     const double extra = m.widthHz - m.nominalHz;
+    if (m.known() && ifShifts(now))
+    {
+        // IF SHIFT: the nearest width the rig takes, centred by the shift,
+        // in its steps and within its reach.
+        out.widthHz = roundWidth(want - extra, false, steps);
+        const double shift = (wanted.centre() - m.centreHz) / m.hzPerKnob;
+        const int steps20 = (int)std::lround(shift / IF_SHIFT_STEP_HZ);
+        out.ifShiftHz = std::max(-IF_SHIFT_MAX_HZ, std::min(IF_SHIFT_MAX_HZ, steps20 * IF_SHIFT_STEP_HZ));
+        return out;
+    }
     const bool knobs = m.known() && now.pbtIn && now.pbtOut;
     if (!knobs)
     {
         // The width alone: the edges move together about the centre.
-        out.widthHz = roundWidth(want - extra, false);
+        out.widthHz = roundWidth(want - extra, false, steps);
         return out;
     }
-    int width = now.widthHz > 0 ? now.widthHz : roundWidth(want - extra, true);
-    if (want > width + extra) width = roundWidth(want - extra, true);
+    int width = now.widthHz > 0 ? now.widthHz : roundWidth(want - extra, true, steps);
+    if (want > width + extra) width = roundWidth(want - extra, true, steps);
     double in = 0.5, outKnob = 0.5;
     const double k = m.hzPerKnob;
     auto solve = [&](int w) {
@@ -249,7 +307,7 @@ RigFilter settingFor(const Span& wanted, const RigFilter& now, const KnobModel& 
     // Past what the knobs reach: a narrower width, the knobs for the rest.
     if (!solve(width))
     {
-        width = roundWidth(want - extra, true);
+        width = roundWidth(want - extra, true, steps);
         solve(width);
     }
     out.widthHz = width;
@@ -268,6 +326,12 @@ RigFilter settingFor(const Span& wanted, const RigFilter& now, double centreHz, 
 RigFilter shiftedBy(const RigFilter& now, double hz, double hzPerKnob)
 {
     RigFilter out = now;
+    if (ifShifts(now) && hzPerKnob != 0)
+    {
+        const int to = *now.ifShiftHz + (int)std::lround(hz / hzPerKnob / IF_SHIFT_STEP_HZ) * IF_SHIFT_STEP_HZ;
+        out.ifShiftHz = std::max(-IF_SHIFT_MAX_HZ, std::min(IF_SHIFT_MAX_HZ, to));
+        return out;
+    }
     if (!now.pbtIn || !now.pbtOut || hzPerKnob <= 0) return out;
     const double in = *now.pbtIn, o = *now.pbtOut;
     const double turn = std::max(-std::min(in, o), std::min(1 - std::max(in, o), hz / hzPerKnob));
@@ -278,6 +342,8 @@ RigFilter shiftedBy(const RigFilter& now, double hz, double hzPerKnob)
 
 double guessHzPerKnob(const RigFilter& f)
 {
+    // IF SHIFT is in Hz: taken as set.
+    if (ifShifts(f)) return 1.0;
     return f.widthHz > 0 ? f.widthHz : 3000;
 }
 
@@ -286,6 +352,7 @@ RigFilter disabled(const RigFilter& now)
     RigFilter out = now;
     if (out.pbtIn) out.pbtIn = quantise(0.5);
     if (out.pbtOut) out.pbtOut = quantise(0.5);
+    if (ifShifts(out)) out.ifShiftHz = 0;
     if (out.notchOn) out.notchOn = false;
     return out;
 }
@@ -293,7 +360,7 @@ RigFilter disabled(const RigFilter& now)
 bool filtersOff(const RigFilter& f)
 {
     return (!f.pbtIn || radio::pbtCentred(*f.pbtIn)) && (!f.pbtOut || radio::pbtCentred(*f.pbtOut)) &&
-           !(f.notchOn && *f.notchOn);
+           !(ifShifts(f) && *f.ifShiftHz != 0) && !(f.notchOn && *f.notchOn);
 }
 
 bool holds(const RigFilter& rig, const RigFilter& preset)
@@ -303,6 +370,8 @@ bool holds(const RigFilter& rig, const RigFilter& preset)
     };
     if (rig.mode != preset.mode || rig.widthHz != preset.widthHz) return false;
     if (!near(rig.pbtIn, preset.pbtIn) || !near(rig.pbtOut, preset.pbtOut)) return false;
+    if (preset.ifShiftHz && !(rig.ifShiftHz && std::abs(*rig.ifShiftHz - *preset.ifShiftHz) <= IF_SHIFT_STEP_HZ))
+        return false;
     if (!preset.notchOn) return true;
     const bool on = rig.notchOn && *rig.notchOn;
     if (on != *preset.notchOn) return false;
@@ -462,7 +531,8 @@ void FilterEdit::hold(bool held, uint64_t nowMs)
 
 bool Calibration::start(const RigFilter& now)
 {
-    if (!now.pbtIn || !now.pbtOut) return false;
+    if (!shifts(now)) return false;
+    ifShift_ = ifShifts(now);
     original_ = now;
     step_ = 0;
     spans_.clear();
@@ -482,6 +552,12 @@ std::optional<RigFilter> Calibration::setting() const
     if (!running()) return std::nullopt;
     if (step_ == PUT_BACK) return original_;
     RigFilter f = original_;
+    if (ifShift_)
+    {
+        static const int SHIFTS[MEASURES] = {0, IF_STEP_HZ, 2 * IF_STEP_HZ, -IF_STEP_HZ, -2 * IF_STEP_HZ};
+        f.ifShiftHz = SHIFTS[step_];
+        return f;
+    }
     f.pbtIn = 0.5;
     f.pbtOut = 0.5;
     if (step_ == 1) f.pbtIn = quantise(0.5 + STEP);
@@ -498,29 +574,56 @@ void Calibration::measured(const Span& span)
     step_++;
     if (step_ != PUT_BACK) return;
     const Span& centred = spans_[0];
-    // The knobs' turns, as the rig takes them.
-    const double up1 = quantise(0.5 + STEP) - 0.5, up2 = quantise(0.5 + 2 * STEP) - 0.5;
-    const double down1 = quantise(0.5 - STEP) - 0.5, down2 = quantise(0.5 - 2 * STEP) - 0.5;
-    // Each pair moved one edge; between its two turns, both in sight.
-    auto moved = [](const Span& a, const Span& b) { return (b.lowHz - a.lowHz) + (b.highHz - a.highHz); };
+    // The knobs' turns, as the rig takes them; or the shifts.
+    const double up1 = ifShift_ ? IF_STEP_HZ : quantise(0.5 + STEP) - 0.5;
+    const double up2 = ifShift_ ? 2 * IF_STEP_HZ : quantise(0.5 + 2 * STEP) - 0.5;
+    const double down1 = ifShift_ ? -IF_STEP_HZ : quantise(0.5 - STEP) - 0.5;
+    const double down2 = ifShift_ ? -2 * IF_STEP_HZ : quantise(0.5 - 2 * STEP) - 0.5;
+    // Each pair of turns moved one edge; between its two turns, both in
+    // sight. A shift moves both, but one may sit under a cut in the audio:
+    // the one that moved further is the measure.
+    const bool ifShift = ifShift_;
+    auto moved = [ifShift](const Span& a, const Span& b) {
+        const double low = b.lowHz - a.lowHz, high = b.highHz - a.highHz;
+        if (!ifShift) return low + high;
+        return std::fabs(low) >= std::fabs(high) ? low : high;
+    };
     const double movedUp = moved(spans_[1], spans_[2]);
     const double movedDown = moved(spans_[3], spans_[4]);
     const double kUp = movedUp / (up2 - up1), kDown = movedDown / (down2 - down1);
     char text[240];
     if (std::fabs(movedUp) < LEAST_HZ || std::fabs(movedDown) < LEAST_HZ)
     {
-        std::snprintf(text, sizeof text,
-                      "The edges hardly moved (%d Hz for a turn up, %d Hz for a turn down): this rig's knobs may "
-                      "not be the twin PBT, or the band is too quiet to see",
-                      tens(movedUp), tens(movedDown));
+        if (ifShift_)
+            std::snprintf(text, sizeof text,
+                          "The edges hardly moved (%d Hz for 200 Hz of shift up, %d Hz down): the rig may not "
+                          "take IF SHIFT in this mode, or the band is too quiet to see",
+                          tens(movedUp), tens(-movedDown));
+        else
+            std::snprintf(text, sizeof text,
+                          "The edges hardly moved (%d Hz for a turn up, %d Hz for a turn down): this rig's knobs may "
+                          "not be the twin PBT, or the band is too quiet to see",
+                          tens(movedUp), tens(movedDown));
         problem_ = text;
         return;
     }
     if ((kUp > 0) != (kDown > 0) || std::fabs(kUp - kDown) > AGREE * std::max(std::fabs(kUp), std::fabs(kDown)))
     {
-        std::snprintf(text, sizeof text, "The two knobs disagreed (%d and %d Hz for a full turn): try again on a "
-                                         "steadier band",
-                      tens(kUp), tens(kDown));
+        if (ifShift_)
+            std::snprintf(text, sizeof text, "The shifts up and down disagreed (%d and %d Hz for 200 Hz): try again "
+                                             "on a steadier band",
+                          tens(kUp * IF_STEP_HZ), tens(kDown * IF_STEP_HZ));
+        else
+            std::snprintf(text, sizeof text, "The two knobs disagreed (%d and %d Hz for a full turn): try again on a "
+                                             "steadier band",
+                          tens(kUp), tens(kDown));
+        problem_ = text;
+        return;
+    }
+    if (ifShift_ && (std::fabs(kUp + kDown) / 2 < IF_LEAST || std::fabs(kUp + kDown) / 2 > IF_MOST))
+    {
+        std::snprintf(text, sizeof text, "200 Hz of IF SHIFT moved the edges %d Hz: that is no IF SHIFT to go by",
+                      tens((kUp + kDown) / 2 * IF_STEP_HZ));
         problem_ = text;
         return;
     }
@@ -551,6 +654,19 @@ void Calibration::measured(const Span& span)
 
 std::string Calibration::stepText() const
 {
+    if (ifShift_)
+    {
+        switch (step_)
+        {
+        case 0: return "Measuring with IF SHIFT centred (1 of 5)";
+        case 1: return "Measuring with IF SHIFT at +200 Hz (2 of 5)";
+        case 2: return "Measuring with IF SHIFT at +400 Hz (3 of 5)";
+        case 3: return "Measuring with IF SHIFT at -200 Hz (4 of 5)";
+        case 4: return "Measuring with IF SHIFT at -400 Hz (5 of 5)";
+        case PUT_BACK: return "Putting the shift back";
+        default: return std::string();
+        }
+    }
     switch (step_)
     {
     case 0: return "Measuring with the knobs centred (1 of 5)";

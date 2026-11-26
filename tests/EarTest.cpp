@@ -1075,6 +1075,127 @@ void notchInHz()
     CHECK_EQ(ragtime::radio::describe(on), std::string("USB \xc2\xb7 3000 Hz filter \xc2\xb7 notch 1230 Hz"));
 }
 
+// A Yaesu with IF SHIFT and no PBT (2026-11-26, an FT-891): Calibrate
+// measures what a shift does, then the middle shifts and each edge moves
+// alone, on the rig's own widths and 20 Hz of shift.
+RigFilter yaesu(int width, int shift)
+{
+    RigFilter f;
+    f.mode = "USB";
+    f.widthHz = width;
+    f.ifShiftHz = shift;
+    return f;
+}
+
+void ifShift()
+{
+    std::mt19937 rng(17);
+    const std::vector<int> steps = widthSteps("hamlib-1036", "USB");
+    CHECK(!steps.empty() && steps.front() == 200 && steps.back() == 3200);
+    CHECK(widthSteps("hamlib-1036", "PKTUSB").back() == 3000);
+    CHECK(widthSteps("hamlib-3073", "USB").empty());
+    CHECK_EQ(roundWidth(1000, false, steps), 1100);
+    CHECK_EQ(roundWidth(1000, true, steps), 1100);
+    CHECK_EQ(roundWidth(1575, false, steps), 1500);
+    CHECK_EQ(roundWidth(5000, true, steps), 3200);
+    CHECK_EQ(roundWidth(1000, false), 1000);
+
+    RigFilter y = yaesu(3000, 0);
+    CHECK(ifShifts(y) && !twinPbt(y) && shifts(y));
+    CHECK(!ifShifts(usb(2400)) && twinPbt(usb(2400)));
+    RigFilter both = usb(2400);
+    both.ifShiftHz = 100;
+    CHECK(!ifShifts(both));     // PBT wins
+    CHECK_EQ(calibrationWidth(y), 0);
+    CHECK_EQ(calibrationWidth(usb(2400)), 2400);
+    CHECK_EQ(ragtime::radio::describe(yaesu(2400, 200)),
+             std::string("USB \xc2\xb7 2400 Hz filter \xc2\xb7 IF shift +200 Hz"));
+    CHECK_EQ(ragtime::radio::ifShiftText(yaesu(2400, -40)), std::string("IF -40 Hz"));
+
+    // Uncalibrated, a shift is taken as set, in 20 Hz steps, within reach.
+    CHECK(shiftedBy(y, 305, guessHzPerKnob(y)).ifShiftHz == std::optional<int>(300));
+    CHECK(shiftedBy(y, 5000, guessHzPerKnob(y)).ifShiftHz == std::optional<int>(IF_SHIFT_MAX_HZ));
+    CHECK(shiftedBy(y, -300, -1.0).ifShiftHz == std::optional<int>(300));
+    // Disable centres it; presets hold it.
+    CHECK(!filtersOff(yaesu(3000, 200)));
+    CHECK(disabled(yaesu(3000, 200)).ifShiftHz == std::optional<int>(0));
+    CHECK(filtersOff(disabled(yaesu(3000, 200))));
+    CHECK(holds(yaesu(3000, 220), yaesu(3000, 200)));
+    CHECK(!holds(yaesu(3000, 300), yaesu(3000, 200)));
+
+    // Calibrate a pretend FT-891: as set, its 3000 Hz filter passing 3080
+    // about 1560 Hz, the audio cut at 100 Hz hiding the low edge.
+    PretendRig rig{knobs(1.0, 1560, 3080, 3000, 100), yaesu(3000, 0)};
+    Calibration c;
+    CHECK(c.start(rig.filter));
+    int n = 0;
+    while (c.running() && n++ < 10)
+    {
+        CHECK(!c.stepText().empty());
+        std::optional<RigFilter> f = c.setting();
+        if (!f) break;
+        rig.filter = *f;
+        std::optional<Edges> e = rig.listen(rng);
+        c.measured(e ? spanFrom(*e) : Span{});
+    }
+    CHECK(rig.filter == yaesu(3000, 0));
+    CHECK(c.result().has_value());
+    const KnobModel m = c.result().value_or(KnobModel{});
+    CHECK(std::fabs(m.hzPerKnob - 1.0) < 0.1);
+    CHECK(std::fabs(m.centreHz - 1560) < 40);
+    CHECK(std::fabs(m.widthHz - 3080) < 80);
+    CHECK(m.floorHz > 60 && m.floorHz < 150);
+
+    // The high edge alone: down to 2450, the low edge staying, on the
+    // rig's widths (so within half a step or so).
+    std::optional<Edges> now = rig.listen(rng);
+    CHECK(now.has_value());
+    if (now)
+    {
+        const Span from = spanFrom(*now);
+        const RigFilter to = settingFor(dragTarget(from, Span{from.lowHz, 2450}, rig.filter, m), rig.filter, m, steps);
+        CHECK(std::find(steps.begin(), steps.end(), to.widthHz) != steps.end());
+        CHECK(to.ifShiftHz && *to.ifShiftHz % IF_SHIFT_STEP_HZ == 0 && *to.ifShiftHz < 0);
+        rig.filter = to;
+        std::optional<Edges> after = rig.listen(rng);
+        CHECK(after && near(after->lowHz, from.lowHz, 90) && near(after->highHz, 2450, 90));
+        // The middle 300 Hz up.
+        if (after)
+        {
+            const Span a = spanFrom(*after);
+            rig.filter =
+                settingFor(dragTarget(a, Span{a.lowHz + 300, a.highHz + 300}, rig.filter, m), rig.filter, m, steps);
+            std::optional<Edges> shifted = rig.listen(rng);
+            CHECK(shifted && near(shifted->highHz, a.highHz + 300, 40));
+            CHECK(rig.filter.widthHz == to.widthHz);
+        }
+    }
+
+    // One that shifts the other way in this mode.
+    PretendRig reversed{knobs(-1.0, 1500, 2400, 2400), yaesu(2400, 0)};
+    Calibration r;
+    CHECK(r.start(reversed.filter));
+    for (int i = 0; r.running() && i < 10; i++)
+    {
+        reversed.filter = *r.setting();
+        std::optional<Edges> e = reversed.listen(rng);
+        r.measured(e ? spanFrom(*e) : Span{});
+    }
+    CHECK(r.result() && std::fabs(r.result()->hzPerKnob + 1.0) < 0.1);
+
+    // A shift that does nothing: no model, and says why.
+    PretendRig stuck{knobs(0, 1500, 2400, 2400), yaesu(2400, 0)};
+    Calibration d;
+    CHECK(d.start(stuck.filter));
+    for (int i = 0; d.running() && i < 10; i++)
+    {
+        stuck.filter = *d.setting();
+        std::optional<Edges> e = stuck.listen(rng);
+        d.measured(e ? spanFrom(*e) : Span{});
+    }
+    CHECK(!d.result() && !d.problem().empty());
+}
+
 void clockHeld()
 {
     const uint64_t t = 1000000;
@@ -1215,6 +1336,7 @@ int main()
     spans();
     notch();
     notchInHz();
+    ifShift();
     clockHeld();
     keepAhead();
     shiftPastTheEnd();
