@@ -19,11 +19,16 @@ VARA KISS frame types. HF profile, protocol 15 and 8 kHz audio remain unchanged.
 The upstream engine source is unmodified in an independent pinned checkout.
 
 The independent Ragtime macOS and standalone Data2G apps are outside this
-update. The installed bundled app is backed up before replacement. No GitHub
-release is published until this development build has been tested by the user.
+update. The installed bundled app is backed up before replacement. This integration is packaged as macOS 0.4.0 beta 6.
 
 Validation uses native tests and simulated audio/radios. Physical-radio TX,
 ALC and particular radio models require station testing.
 
 Sources: https://github.com/baitisj/ragtime,
 https://github.com/arodland/Data2G, https://github.com/baitisj/sotto.
+
+Validation: 63 Ragtime regression/widget tests and 31 Data2G native HF tests
+passed. Cross-version audio payloads passed in both directions for six modes.
+Deep Search/Clear, manual CAT entry, pictures, the live modem monitor and native
+Help/About were checked. The final packaged modem returned HAND END EXPIRED
+and shut down cleanly. Physical-radio TX/ALC requires station testing.

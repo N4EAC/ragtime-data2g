@@ -12,7 +12,7 @@ and on which band, each of your friends gets through, so it can tell you
 who is likely around now, and the best time of day to check in to the
 D2G net to find them.
 
-Status: 0.4.0 development build. Ragtime connects to data2g-host,
+Status: 0.4.0 beta 6. Ragtime connects to data2g-host,
 chats on the D2G broadcast group. Current features include:
 - "Globus," which plots your friend's maidenhead coordinates
    on a globe,
@@ -64,7 +64,7 @@ closing the search strip restores the cleared view.
 
 ## Downloads
 
-The current published macOS release is 0.4.0 beta 5; published ZIP and DMG packages
+The current published macOS release is 0.4.0 beta 6; published ZIP and DMG packages
 are listed on the release page below. The macOS app bundles Data2G v0.5.3
 and sotto v3.8 for Apple Silicon with macOS 27 or later. Packages are ad hoc
 signed and have no Apple notarization.

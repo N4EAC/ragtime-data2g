@@ -4,11 +4,10 @@ Changes to the Ragtime fork with bundled Data2G for macOS. Dates use
 America/New_York. Entries summarize this fork's packaged releases; the
 upstream projects retain their own histories.
 
-## Unreleased — 2026-11-26
+## 0.4.0 beta 6 — 2026-11-26
 
 - Keep About under Help on macOS and show the build date, with plain
   component revisions and developer credits.
-
 - Integrate upstream Ragtime through `b4ba6e5`: optional history Search,
   read-only past sessions, retained/paged chat history and background picture decoding.
 - Add upstream FlexRadio network support and Ear controls for notch frequency,
