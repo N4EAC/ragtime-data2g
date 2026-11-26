@@ -1595,8 +1595,8 @@ void testChatUnsealed()
     CHECK(a.files.send(makeFile("two.txt", 300), "qpsk-r1/3", now, error) != 0);
     air.run(Seals::QUIET_MS + 60000);
     CHECK_EQ(a.seals.sealsSent(), (size_t)3);
-    // Each goes three times (a file's seal is repeated), always as a pair.
-    CHECK_EQ(air.sealsOnAir.size(), (size_t)6);
+    // Each goes twice (a file's seal is repeated once), always as a pair.
+    CHECK_EQ(air.sealsOnAir.size(), (size_t)(2 * (1 + Seals::FLUSH_REPEATS)));
     for (size_t i = 0; i + 1 < air.sealsOnAir.size(); i += 2) CHECK_EQ(air.sealsOnAir[i], air.sealsOnAir[i + 1]);
     CHECK_EQ(air.requestsOnAir, (size_t)0);
 }
@@ -2547,6 +2547,24 @@ void testEditUnsealed()
     CHECK(a.chat.canEdit(a.chat.messages().back()));
 }
 
+// Issue #185: a voice clip on an empty frequency. Its seal goes as its
+// last piece has gone, once more a listening window later in case it was
+// lost, and that is all: no station asks, so nothing keys again.
+void testQuietChannel()
+{
+    Air air;
+    Station& a = air.add("AG7EW", 1);
+    air.run(2000);
+    std::string error;
+    CHECK(a.files.send(makeFile("quiet.sot", 3000, 11), "qpsk-r1/3", now, error, false, true) != 0);
+    air.run(10 * 60 * 1000);
+    CHECK_EQ(a.seals.sealsSent(), (size_t)1);
+    CHECK_EQ(air.sealsOnAir.size(), (size_t)(1 + Seals::FLUSH_REPEATS));
+    uint64_t window = broadcast::listeningWindowMs(broadcast::findMode(a.link.modes(), "qpsk-r1/3"));
+    for (size_t i = 1; i < air.sealsOnAir.size(); i++) CHECK(air.sealsOnAir[i] >= air.sealsOnAir[i - 1] + window);
+    CHECK_EQ(air.requestsOnAir, (size_t)0);
+}
+
 int main()
 {
     testAirtime();
@@ -2596,6 +2614,7 @@ int main()
     testRepairsShown();
     testPictures();
     testVoice();
+    testQuietChannel();
     std::filesystem::remove_all(scratch());
     return ragtime_test::finish();
 }

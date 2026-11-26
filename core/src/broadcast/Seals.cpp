@@ -808,7 +808,7 @@ void Seals::sealIfDue(uint64_t nowMs)
             {
                 made.front().burst = id;
                 made.front().tries = 1;
-                handRound_ = HandRound{round.seal, round.channels, id};
+                handRound_ = HandRound{round.seal, round.channels, id, window.delayS, 0};
                 for (OurSeal& s : made) seals_.push_back(std::move(s));
                 version_++;
                 return;
@@ -1449,7 +1449,15 @@ void Seals::onEvent(const Event& event, uint64_t nowMs)
             s.sent = true;
             s.sentMs = nowMs;
             sealsSent_++;
-            windowEndsMs_ = std::max(windowEndsMs_, nowMs + listeningWindowMs(modeInfo(s.mode)));
+            uint64_t window = listeningWindowMs(modeInfo(s.mode));
+            // With a Hand window, the requests are the Hands: the window
+            // lasts until the host's is over, however fast the mode.
+            if (handRound_ && handRound_->burst == event.id)
+            {
+                handRound_->sentMs = nowMs;
+                window = std::max(window, handWindowMs(*handRound_));
+            }
+            windowEndsMs_ = std::max(windowEndsMs_, nowMs + window);
         }
         else if (s.tries < SEAL_TRIES)
         {
@@ -1585,13 +1593,33 @@ void Seals::onRecord(const protocol::Record& record, uint64_t nowMs)
     }
 }
 
+uint64_t Seals::handWindowMs(const HandRound& round)
+{
+    return (uint64_t)std::ceil((round.delayS + link::HAND_SECONDS + link::HAND_SEARCH_S) * 1000.0);
+}
+
+bool Seals::handWindowOpen(uint64_t nowMs) const
+{
+    if (!handRound_ || handRound_->sentMs == 0) return false;
+    return nowMs < handRound_->sentMs + handWindowMs(*handRound_) + (uint64_t)(link::HAND_DECODE_MAX_S * 1000.0);
+}
+
 void Seals::tick(uint64_t nowMs)
 {
-    if (windowEndsMs_ != 0 && nowMs >= windowEndsMs_ && resendLast_ == 0)
+    // A Hand window whose HAND END never came is over all the same, so
+    // the next seal may have a round of its own.
+    if (handRound_ && handRound_->sentMs != 0 && !handWindowOpen(nowMs)) handRound_.reset();
+    // A window ends with requests to answer or none; while our Hand
+    // window is open, the Hands, our round's requests, are still to come
+    // (until the host's HAND END): deciding sooner would send the seal
+    // again into the host's hold, keyed the moment the Hands end, and
+    // leave the Hands for the round after (ragtime #185).
+    if (windowEndsMs_ != 0 && nowMs >= windowEndsMs_ && resendLast_ == 0 && !handWindowOpen(nowMs))
     {
         windowEndsMs_ = 0;
         // Requests start another round; a window with none ends the
-        // repairs, but for a file's seal, which goes again a time or two.
+        // repairs, but for a file's seal, which goes again FLUSH_REPEATS
+        // times.
         if (!asked_.empty() || !refusing_.empty())
             resend(nowMs);
         else

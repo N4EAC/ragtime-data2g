@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -16,7 +19,9 @@
 #include <vector>
 
 #include "Check.h"
+#include "ragtime/broadcast/Airtime.h"
 #include "ragtime/broadcast/BroadcastChat.h"
+#include "ragtime/broadcast/BroadcastFiles.h"
 #include "ragtime/broadcast/Seals.h"
 #include "ragtime/broadcast/Stations.h"
 #include "ragtime/link/Data2GLink.h"
@@ -208,15 +213,21 @@ struct End
                             uint64_t at) { seals.going(items, burst, mode, at); });
     }
 
+    // Broadcast files too, for the tests that send one.
+    void withFiles() { files = std::make_unique<broadcast::BroadcastFiles>(link, chat, seals); }
+
     void events()
     {
         for (const HostLink::Event& e : link.takeEvents())
         {
             seals.onEvent(e, now);
+            if (files) files->onEvent(e, now);
             for (const protocol::Record& r : chat.onEvent(e, now))
             {
                 stations.onRecord(r, now);
                 seals.onRecord(r, now);
+                if (files) files->onRecord(r, now);
+                heard.push_back({now, r});
             }
             for (std::vector<protocol::Record> again = seals.takeRebuilt(); !again.empty(); again = seals.takeRebuilt())
             {
@@ -241,7 +252,11 @@ struct End
     BroadcastChat chat;
     broadcast::Seals seals;
     broadcast::Stations stations;
+    std::unique_ptr<broadcast::BroadcastFiles> files;
     link::KissDecoder kiss;
+    std::vector<std::pair<uint64_t, protocol::Record>> heard;   // every record heard, and when
+    // A frame with a record this says is lost isn't heard here.
+    std::function<bool(const protocol::Record&)> lose;
     double db;                      // how loud the others hear this station
     bool deaf = false;              // hears nothing on the air
     bool holdBursts = false;        // the host keeps our bursts (the channel busy)
@@ -342,7 +357,14 @@ void step(std::vector<End*> ends)
             for (const link::KissFrame& f : frames)
             {
                 if (f.command != link::KISS_ACKMODE || f.payload.size() < 2) continue;
-                std::vector<uint8_t> k = link::kissEncode(GROUP_PORT, std::vector<uint8_t>(f.payload.begin() + 2, f.payload.end()));
+                std::vector<uint8_t> data(f.payload.begin() + 2, f.payload.end());
+                if (other->lose)
+                {
+                    std::vector<protocol::Record> records;
+                    protocol::decodeFrame(data, records);
+                    if (std::any_of(records.begin(), records.end(), other->lose)) continue;
+                }
+                std::vector<uint8_t> k = link::kissEncode(GROUP_PORT, data);
                 in.insert(in.end(), k.begin(), k.end());
             }
             other->link.kissBytes(in.data(), in.size(), now);
@@ -361,15 +383,16 @@ void step(std::vector<End*> ends)
         end->events();
         end->chat.tick(now);
         end->seals.tick(now);
+        if (end->files) end->files->tick(now);
     }
 }
 
 // The Hands waiting go into each open window: heard if the tag and
 // channel match, two in one channel lost; then the window ends, the delay
-// and the Hand after the burst.
-void raiseHands(std::vector<End*> ends)
+// and the Hand after the burst (or now, for a test that stepped there).
+void raiseHands(std::vector<End*> ends, bool jump = true)
 {
-    now += (uint64_t)((3.0 + link::HAND_SECONDS + link::HAND_SEARCH_S + 0.4) * 1000.0);
+    if (jump) now += (uint64_t)((3.0 + link::HAND_SECONDS + link::HAND_SEARCH_S + 0.4) * 1000.0);
     for (End* net : ends)
     {
         if (!net->window || !net->window->open) continue;
@@ -821,6 +844,97 @@ void testRepairsByHand()
     CHECK(a.seals.paritySent() >= 1);
 }
 
+// Issue #185: a file's seal with a Hand window, in a mode whose listening
+// window (3 one-codeword bursts and 4 s) ends before the Hand window
+// does. The Hands are the round's requests, so the seal isn't sent again
+// into the host's hold while they are still to come; the repair round
+// follows the window at once; and the station that asked by Hand sends no
+// request burst as well.
+void testHandWindowOutlastsListening()
+{
+    End a("W1AW", "FN31", 9.0);
+    End b("KC2G", "FN20", -6.0);
+    a.withFiles();
+    b.withFiles();
+    std::filesystem::path dir = std::filesystem::temp_directory_path() / "ragtime-roll-call-test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir / "voice");
+    b.files->setAutoVoice((dir / "voice").string(), 64 * 1024);
+    std::vector<End*> all{&a, &b};
+    up(all);
+    CHECK(!b.chat.send("Evening all", "", now).empty());    // A's host shows Hands with it
+    settle(all);
+    CHECK(a.link.handsSeen());
+    link::ModeInfo mode = broadcast::findMode(a.link.modes(), "qpsk-r1/3");
+    uint64_t listening = broadcast::listeningWindowMs(mode);
+    uint64_t handWindow = (uint64_t)((3.0 + link::HAND_SECONDS + link::HAND_SEARCH_S) * 1000.0);
+    CHECK(listening < handWindow);
+
+    // B loses one piece of the clip the first time it goes.
+    auto lost = std::make_shared<bool>(false);
+    b.lose = [lost](const protocol::Record& r) {
+        const protocol::FilePiece* p = r.as<protocol::FilePiece>();
+        if (p == nullptr || p->index != 1 || *lost) return false;
+        *lost = true;
+        return true;
+    };
+    std::filesystem::path clip = dir / "hello.sot";
+    {
+        std::ofstream out(clip, std::ios::binary);
+        for (int i = 0; i < 900; i++) out.put((char)(i * 37 + 11));
+    }
+    std::string error;
+    CHECK(a.files->send(clip.string(), "qpsk-r1/3", now, error, false, true) != 0);
+    auto sealsFromA = [&]() {
+        return std::count_if(b.heard.begin(), b.heard.end(), [](const std::pair<uint64_t, protocol::Record>& h) {
+            return h.second.header.callsign == "W1AW" && h.second.as<protocol::Seal>() != nullptr;
+        });
+    };
+    for (int i = 0; i < 120 && !b.hand; i++)
+    {
+        now += 500;
+        step(all);
+    }
+    // The seal went with its round, and B answers by Hand.
+    CHECK(b.hand.has_value());
+    CHECK(a.window.has_value() && a.window->open);
+    CHECK_EQ(sealsFromA(), (long)1);
+
+    // The host holds A's bursts while the window is open (Data2G's holds),
+    // to its end: nothing of A's should be waiting for it there.
+    a.holdBursts = true;
+    for (uint64_t t = 0; t < handWindow + 400; t += 500)
+    {
+        now += 500;
+        step(all);
+    }
+    CHECK(a.heldKiss.empty());
+    CHECK(a.link.outgoing().empty());
+    raiseHands(all, false);
+    a.holdBursts = false;
+    CHECK_EQ(a.seals.handsHeard(), (size_t)1);
+    size_t from = b.heard.size();
+    for (int i = 0; i < 120; i++)
+    {
+        now += 500;
+        step(all);
+    }
+    // The repair came straight after the window, its parity ahead of the
+    // seal, and B never asked by burst.
+    const protocol::Record* first = nullptr;
+    for (size_t i = from; i < b.heard.size() && first == nullptr; i++)
+    {
+        if (b.heard[i].second.header.callsign == "W1AW") first = &b.heard[i].second;
+    }
+    CHECK(first != nullptr && first->as<protocol::FilePiece>() != nullptr);
+    CHECK_EQ(b.seals.requestsSent(), (size_t)0);
+    bool saved = false;
+    for (const broadcast::BroadcastFile& f : b.files->files(now))
+        saved = saved || (!f.outgoing && f.state == broadcast::BroadcastFile::State::Saved);
+    CHECK(saved);
+    std::filesystem::remove_all(dir);
+}
+
 void testRepairHandPayload()
 {
     protocol::RepairHand hand;
@@ -879,5 +993,6 @@ int main()
     testWindowThatNeverOpened();
     testRepairHandPayload();
     testRepairsByHand();
+    testHandWindowOutlastsListening();
     return ragtime_test::finish();
 }
