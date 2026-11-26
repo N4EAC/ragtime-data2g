@@ -49,9 +49,11 @@ void followThemeText(wxWindow* window, std::function<wxColour()> colour);
 void scrollbarBeside(wxWindow* window);
 
 // A notebook tab's label in bold, or back to plain: the Session tab while
-// it has lines not yet seen (Jeff, 2026-11-13). wx has no font per tab, so
-// on GTK this sets the label's weight; elsewhere it does nothing and says
-// false, and the caller marks the tab some other way.
-bool boldTab(wxNotebook* book, size_t page, bool bold);
+// it has lines not yet seen (Jeff, 2026-11-13); and greyed, or not: the
+// Session tab with no session up, or reviewing earlier ragchews (Jeff,
+// 2026-11-25). wx has no font per tab, so on GTK this sets the label's
+// weight and alpha; elsewhere it does nothing and says false, and the
+// caller marks the tab some other way.
+bool styleTab(wxNotebook* book, size_t page, bool bold, bool grey);
 
 #endif

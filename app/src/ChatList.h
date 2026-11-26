@@ -37,6 +37,9 @@ public:
 
     // True while the newest row is kept in view.
     bool following() const { return following_; }
+    // Keeps the newest row in view from the next showRows: other rows in
+    // place of these, where reading from the old place means nothing.
+    void followNewest() { following_ = true; }
 
     // Every scroll comes through here, with the new top row already set
     // and before the scroll bar is told: a scroll that wasn't ours is the

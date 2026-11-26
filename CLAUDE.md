@@ -242,7 +242,12 @@ into the APK, so rebuild it after changing them.
   `app/src/RecentWorkPane`, under the station list in the `left_`
   splitter. Since 2026-11-01 every path log line carries the station's
   locator and a new or moved one gets a `locator` line; a Recent work
-  pick blinks yellow on Globus at its last square, its tooltip gives the
+  pick blinks yellow on Globus at its last square, and with no session
+  up shows the earlier ragchews with it from `SessionLog` on the Session
+  tab, read only (`SessionPage::review`, Jeff 2026-11-25: the tab
+  "Session · W1AW (read only)", greyed on GTK as "Session · none" is,
+  and the words in the typing line where a lost session puts its own);
+  its tooltip gives the
   locator and distance, and Globus shows the locator under the pointer
   (`globus::locatorOf`, `globus::fromScreen`). Since 2026-11-02 the
   globe fills the pane and comes in on a picked path with room round it,

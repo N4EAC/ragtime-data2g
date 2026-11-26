@@ -122,7 +122,7 @@ void scrollbarBeside(wxWindow* window)
 #endif
 }
 
-bool boldTab(wxNotebook* book, size_t page, bool bold)
+bool styleTab(wxNotebook* book, size_t page, bool bold, bool grey)
 {
 #if defined(__WXGTK3__)
     if (book == nullptr || page >= book->GetPageCount()) return false;
@@ -143,6 +143,9 @@ bool boldTab(wxNotebook* book, size_t page, bool bold)
     // The label's own attributes: wx's SetPageText leaves them be.
     PangoAttrList* attrs = pango_attr_list_new();
     if (bold) pango_attr_list_insert(attrs, pango_attr_weight_new(PANGO_WEIGHT_BOLD));
+    // Greyed as the theme greys an insensitive label: its own colour, at
+    // half strength, so it works light or dark, picked or not.
+    if (grey) pango_attr_list_insert(attrs, pango_attr_foreground_alpha_new(0x8000));
     gtk_label_set_attributes(GTK_LABEL(label), attrs);
     pango_attr_list_unref(attrs);
     return true;
@@ -150,6 +153,7 @@ bool boldTab(wxNotebook* book, size_t page, bool bold)
     (void)book;
     (void)page;
     (void)bold;
+    (void)grey;
     return false;
 #endif
 }

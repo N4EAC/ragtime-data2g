@@ -30,6 +30,9 @@ chats on the D2G broadcast group. Current features include:
 - "Recent work," under the station list: the stations you hear and
   work, the ones likely around at this hour first, from two weeks of
   the path log (who was heard when, and on which band).
+  Click one you have ragchewed with and the Session tab shows your
+  earlier ragchews with it, read only, until you click it again or
+  pick another station.
 - Voice messages, coded with [sotto](https://github.com/baitisj/sotto),
   Jeff's vocoder: 300 bytes for each second of speech at 2,400 bit/s,
   150 at 1,200, 75 at 600 or 50 at 400, every rate with sotto's
