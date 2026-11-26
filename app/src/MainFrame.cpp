@@ -1,4 +1,5 @@
 #include "MainFrame.h"
+#include "BuildInfo.h"
 
 #include <algorithm>
 #include <chrono>
@@ -106,6 +107,7 @@ namespace
 enum
 {
     ID_GEARSHIFT = wxID_HIGHEST + 1,
+    ID_ABOUT_RAGTIME,
     ID_STATION_SETTINGS,
     ID_RIG_SETTINGS,
     ID_VOICE_SETTINGS,
@@ -595,7 +597,7 @@ void MainFrame::buildMenus()
     help->Append(ID_OPEN_FLIGHT, "Open the &flight recorder folder");
     help->Append(ID_OPEN_SESSION_LOGS, "Open &session logs folder");
     help->AppendSeparator();
-    help->Append(wxID_ABOUT, "&About Ragtime");
+    help->Append(ID_ABOUT_RAGTIME, "&About Ragtime");
 
     auto* menus = new wxMenuBar;
     menus->Append(file, "&File");
@@ -711,6 +713,7 @@ void MainFrame::buildMenus()
 #else
         description += " (revision unavailable)";
 #endif
+        description += "\nBuild date: " + wxString(RAGTIME_BUILD_DATE) + " (UTC)";
 #ifdef RAGTIME_EMBED_DATA2G
         description += "\nBuilt-in Data2G " + utf8(EmbeddedModem::version());
 #ifdef RAGTIME_DATA2G_REVISION
@@ -732,7 +735,7 @@ void MainFrame::buildMenus()
         info.SetDescription(description);
         info.SetWebSite("https://github.com/baitisj/ragtime");
         wxAboutBox(info, this);
-    }, wxID_ABOUT);
+    }, ID_ABOUT_RAGTIME);
 }
 
 void MainFrame::buildLayout()

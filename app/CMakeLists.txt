@@ -81,6 +81,12 @@ add_executable(ragtime WIN32 MACOSX_BUNDLE
 )
 target_include_directories(ragtime PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated ${RAGTIME_RESOURCE_DIR})
 
+string(TIMESTAMP RAGTIME_BUILD_DATE "%Y-%m-%d" UTC)
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/BuildInfo.h" CONTENT [=[
+#pragma once
+#define RAGTIME_BUILD_DATE "@RAGTIME_BUILD_DATE@"
+]=] @ONLY)
+
 find_package(Git QUIET)
 function(ragtime_git_revision directory output)
     if(NOT Git_FOUND OR NOT EXISTS "${directory}/.git")
