@@ -104,10 +104,10 @@ wxString whyNoGears(const Gearshift& shift)
 {
     if (shift.table().empty() && !shift.hostThresholds())
     {
-        return "No thresholds found. Ragtime looks for Data2G's own\n"
-               "data2g/codes_data/mode_thresholds.json in a Data2G checkout\n"
-               "($DATA2G_HOME, ~/Data2G, ~/src/Data2G and the like).\n"
-               "Load it with Load thresholds... below.";
+        return "No gears yet: data2g-host gives them once Ragtime is connected.\n"
+               "With a data2g-host older than Data2G 0.5.1, Ragtime reads\n"
+               "data2g/codes_data/mode_thresholds.json from a Data2G checkout,\n"
+               "or Load thresholds... below picks the file.";
     }
     for (const Submode& mode : shift.usable().modes())
     {
@@ -117,6 +117,43 @@ wxString whyNoGears(const Gearshift& shift)
     return wxString::Format("Thresholds loaded for %d modes. Their widths and speeds\n"
                             "come from data2g-host: the gears appear once it is connected.",
                             static_cast<int>(shift.table().modes().size()));
+}
+
+// Text of several lines, measured and drawn a line at a time. A graphics
+// context on the Mac draws a string as one line, newlines and all, so the
+// lines ran together off both sides of the map (issue #183).
+struct TextLines
+{
+    std::vector<wxString> lines;
+    std::vector<double> widths;
+    double lineHeight = 0, width = 0, height = 0;
+};
+
+TextLines measureLines(wxGraphicsContext& gc, const wxString& text)
+{
+    TextLines out;
+    double w = 0, h = 0;
+    gc.GetTextExtent("Ag", &w, &out.lineHeight);
+    for (const wxString& line : wxSplit(text, '\n', '\0'))
+    {
+        gc.GetTextExtent(line, &w, &h);
+        out.lines.push_back(line);
+        out.widths.push_back(w);
+        out.width = std::max(out.width, w);
+        out.lineHeight = std::max(out.lineHeight, h);
+    }
+    out.height = out.lineHeight * static_cast<double>(out.lines.size());
+    return out;
+}
+
+// Each line at x, or centred in a box of the text's width from x.
+void drawLines(wxGraphicsContext& gc, const TextLines& text, double x, double y, bool centred = false)
+{
+    for (std::size_t i = 0; i < text.lines.size(); i++)
+    {
+        const double indent = centred ? (text.width - text.widths[i]) / 2 : 0.0;
+        gc.DrawText(text.lines[i], x + indent, y + text.lineHeight * static_cast<double>(i));
+    }
 }
 
 void setPen(wxGraphicsContext& gc, const wxColour& colour, double width,
@@ -357,10 +394,9 @@ private:
         if (!empty.empty())
         {
             gc->SetFont(font, soft);
-            const wxString& text = empty;
-            double w = 0, h = 0;
-            gc->GetTextExtent(text, &w, &h);
-            gc->DrawText(text, (GetClientSize().x - w) / 2, (GetClientSize().y - h) / 2);
+            const TextLines text = measureLines(*gc, empty);
+            drawLines(*gc, text, (GetClientSize().x - text.width) / 2, (GetClientSize().y - text.height) / 2,
+                      true);
             return;
         }
 
@@ -555,8 +591,8 @@ private:
                                   + utf8(formatDb(*hovered->thresholdOn(shift_.path()))) + " on a "
                                   + pathLabel(shift_.path()) + " path";
                 gc->SetFont(small, ink);
-                double w = 0, h = 0;
-                gc->GetTextExtent(text, &w, &h);
+                const TextLines lines = measureLines(*gc, text);
+                const double w = lines.width, h = lines.height;
                 double bx = mouse_.x + 14, by = mouse_.y + 14;
                 if (bx + w + 12 > GetClientSize().x)
                     bx = mouse_.x - w - 26;
@@ -565,7 +601,7 @@ private:
                 setPen(*gc, soft, 1);
                 gc->SetBrush(wxBrush(back));
                 gc->DrawRoundedRectangle(bx, by, w + 12, h + 10, 4);
-                gc->DrawText(text, bx + 6, by + 5);
+                drawLines(*gc, lines, bx + 6, by + 5);
             }
         }
     }
