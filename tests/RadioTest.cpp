@@ -805,6 +805,81 @@ void filterSet()
 
 // A second write before the first is read back (an Undo at once): each
 // part goes against what was written, not the reading from before it.
+// A Yaesu through rigctld (2026-11-26, an FT-891): no PBT and no
+// NOTCHF_RAW, so its notch's centre is asked in Hz, "+l NOTCHF", and
+// set so, "L NOTCHF 1230", moved before it goes on.
+void filterYaesu()
+{
+    uint64_t t = T0;
+    DialReader dial;
+    dial.connected(t);
+    dial.takeOutput();
+    say(dial, "0\n", t);
+    CHECK_EQ(probe(dial, t), std::string("f\n"));
+    say(dial, "7074000\n", t);
+    dial.setFilterWatch(true, t);
+    CHECK_EQ(dial.takeOutput(), std::string("+m\n"));
+    say(dial, "get_mode:\nMode: USB\nPassband: 3000\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l PBT_IN\n"));
+    say(dial, "get_level: PBT_IN\nRPRT -11\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l PBT_OUT\n"));
+    say(dial, "get_level: PBT_OUT\nRPRT -11\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+u MN\n"));
+    say(dial, "get_func: MN\n0\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l NOTCHF_RAW\n"));
+    say(dial, "get_level: NOTCHF_RAW\nRPRT -11\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l NOTCHF\n"));
+    say(dial, "get_level: NOTCHF\n1500\nRPRT 0\n", t);
+    CHECK(dial.filter().has_value());
+    if (dial.filter())
+    {
+        CHECK(dial.filter()->notchOn == std::optional<bool>(false));
+        CHECK(!dial.filter()->notchRaw);
+        CHECK(dial.filter()->notchHz == std::optional<int>(1500));
+    }
+    CHECK_EQ(dial.takeOutput(), std::string(""));
+
+    RigFilter f = *dial.filter();
+    f.notchOn = true;
+    f.notchHz = 1230;
+    t += 100;
+    dial.setFilter(f, t);
+    CHECK_EQ(dial.takeOutput(), std::string("L NOTCHF 1230\n"));
+    say(dial, "RPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("U MN 1\n"));
+    say(dial, "RPRT 0\n", t);
+    // Read back at once, the PBT and NOTCHF_RAW no more asked.
+    CHECK_EQ(dial.takeOutput(), std::string("+m\n"));
+    say(dial, "get_mode:\nMode: USB\nPassband: 3000\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+u MN\n"));
+    say(dial, "get_func: MN\n1\nRPRT 0\n", t);
+    CHECK_EQ(dial.takeOutput(), std::string("+l NOTCHF\n"));
+    say(dial, "get_level: NOTCHF\n1230\nRPRT 0\n", t);
+    CHECK(dial.filter() && dial.filter()->notchOn == std::optional<bool>(true) &&
+          dial.filter()->notchHz == std::optional<int>(1230));
+
+    // Off before it moves; the same Hz is no move.
+    t += 100;
+    f.notchOn = false;
+    dial.setFilter(f, t);
+    CHECK_EQ(dial.takeOutput(), std::string("U MN 0\n"));
+    say(dial, "RPRT 0\n", t);
+    t += 100;
+    f.notchHz = 2000;
+    dial.setFilter(f, t);
+    std::string out = dial.takeOutput();
+    // The read-back after the first write may come first.
+    for (int i = 0; i < 8 && out != "L NOTCHF 2000\n"; i++)
+    {
+        if (out == "+m\n") say(dial, "get_mode:\nMode: USB\nPassband: 3000\nRPRT 0\n", t);
+        if (out == "+u MN\n") say(dial, "get_func: MN\n0\nRPRT 0\n", t);
+        if (out == "+l NOTCHF\n") say(dial, "get_level: NOTCHF\n1230\nRPRT 0\n", t);
+        out = dial.takeOutput();
+    }
+    CHECK_EQ(out, std::string("L NOTCHF 2000\n"));
+    CHECK(dial.filterProblem().empty());
+}
+
 void filterSetTwice()
 {
     uint64_t t = T0;
@@ -918,7 +993,7 @@ void onlyAsks()
 {
     const std::vector<std::string> allowed = {"\\chk_vfo", "f", "+l ALC", "+l SWR", "+l RFPOWER_METER_WATTS",
                                               "+l RFPOWER_METER", "+l STRENGTH", "+m", "+l PBT_IN", "+l PBT_OUT",
-                                              "+u MN", "+l NOTCHF_RAW"};
+                                              "+u MN", "+l NOTCHF_RAW", "+l NOTCHF"};
     DialReader dial;
     std::string all;
     uint64_t t = T0;
@@ -1169,6 +1244,7 @@ int main()
     strength();
     filter();
     filterSet();
+    filterYaesu();
     filterSetTwice();
     tune();
     onlyAsks();

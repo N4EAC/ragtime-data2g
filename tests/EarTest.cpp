@@ -1021,6 +1021,60 @@ void notch()
 }
 
 // The clock stands still while held.
+// A Yaesu's notch (2026-11-26, an FT-891): no PBT and no NOTCHF_RAW, the
+// notch's centre in Hz, NOTCHF. The Ear sets it in Hz, to the nearest
+// 10, and needs no model for where it is.
+void notchInHz()
+{
+    const NotchModel m;
+    RigFilter yaesu;
+    yaesu.mode = "USB";
+    yaesu.widthHz = 3000;
+    yaesu.notchOn = false;
+    yaesu.notchHz = 1500;
+    CHECK(notchCentre(yaesu, m) == std::optional<double>(1500));
+    const RigFilter on = withNotch(yaesu, 1234.0, m);
+    CHECK(on.notchOn == std::optional<bool>(true));
+    CHECK(on.notchHz == std::optional<int>(1230));
+    CHECK(!on.notchRaw);
+    CHECK(notchCentre(on, m) == std::optional<double>(1230));
+    CHECK_EQ(notchChangeText(yaesu, on, m), std::string("Notch on at 1230 Hz"));
+    const RigFilter moved = withNotch(on, 2004.0, m);
+    CHECK_EQ(notchChangeText(on, moved, m), std::string("Notch 1230 \xe2\x86\x92 2000 Hz"));
+    // Never under the rig's lowest, 10 Hz.
+    CHECK(withNotch(yaesu, 2.0, m).notchHz == std::optional<int>(10));
+    const RigFilter off = withNotch(moved, std::nullopt, m);
+    CHECK(off.notchOn == std::optional<bool>(false) && off.notchHz == moved.notchHz);
+    CHECK_EQ(notchChangeText(moved, off, m), std::string("Notch off"));
+
+    // A preset in Hz holds within a step or so.
+    RigFilter readBack = moved;
+    readBack.notchHz = 2010;
+    CHECK(holds(readBack, moved));
+    readBack.notchHz = 2100;
+    CHECK(!holds(readBack, moved));
+
+    // An Icom's position still wins where the rig gives one.
+    RigFilter icom = usb(2400);
+    icom.notchOn = false;
+    icom.notchRaw = 0.5;
+    const RigFilter icomOn = withNotch(icom, 1500.0, m);
+    CHECK(icomOn.notchRaw && !icomOn.notchHz);
+    // A rig that says nothing of where gives no centre.
+    RigFilter nowhere = usb(2400);
+    nowhere.notchOn = true;
+    CHECK(!notchCentre(nowhere, m));
+    CHECK_EQ(notchChangeText(usb(2400), nowhere, m), std::string("Notch on"));
+
+    // What the flight recorder says of it.
+    CHECK_EQ(ragtime::radio::notchText(on), std::string("NF 1230 Hz"));
+    CHECK_EQ(ragtime::radio::notchText(off), std::string("NF off"));
+    CHECK_EQ(ragtime::radio::notchText(nowhere), std::string("NF on"));
+    CHECK_EQ(ragtime::radio::notchText(icomOn), "NF " + ragtime::radio::pbtText(*icomOn.notchRaw));
+    CHECK_EQ(ragtime::radio::notchText(usb(2400)), std::string());
+    CHECK_EQ(ragtime::radio::describe(on), std::string("USB \xc2\xb7 3000 Hz filter \xc2\xb7 notch 1230 Hz"));
+}
+
 void clockHeld()
 {
     const uint64_t t = 1000000;
@@ -1160,6 +1214,7 @@ int main()
     calibrate();
     spans();
     notch();
+    notchInHz();
     clockHeld();
     keepAhead();
     shiftPastTheEnd();

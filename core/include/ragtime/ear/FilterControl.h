@@ -29,11 +29,14 @@
 // the clock beside Undo, and goes back unless the operator presses Keep.
 //
 // The notch (Jeff, 2026-10-26). Where the rig has a manual notch (Hamlib's
-// MN and NOTCHF_RAW), its bar is dragged into the spectrum to turn it on
-// there, and back to its bay (NF OFF) to turn it off. NOTCHF_RAW is a
-// position, 0 to 1, not Hz: ear::NotchModel turns one into the other,
+// MN), its bar is dragged into the spectrum to turn it on there, and back
+// to its bay (NF OFF) to turn it off. An Icom places it with NOTCHF_RAW,
+// a position, 0 to 1, not Hz: ear::NotchModel turns one into the other,
 // starting from an IC-7100 and learning from where the dip shows in
-// the noise (EdgeFinder::dip).
+// the noise (EdgeFinder::dip). Yaesu and Kenwood rigs have no NOTCHF_RAW
+// and take NOTCHF, the centre in Hz, which needs no model (2026-11-26:
+// an FT-891's notch went on wherever its own knob had left it, as only
+// NOTCHF_RAW was ever set).
 //
 // The time is always passed in, so tests run it on a simulated clock.
 #ifndef RAGTIME_EAR_FILTER_CONTROL_H
@@ -119,12 +122,18 @@ struct NotchModel
     static std::optional<NotchModel> fromText(const std::string& text);
 };
 
+// Where a setting's notch is centred in the audio: the rig's own Hz
+// (NOTCHF), else its position (NOTCHF_RAW) through the model; none
+// from a rig that gives neither.
+std::optional<double> notchCentre(const RigFilter& f, const NotchModel& m);
 // Whether a notch at hz cuts into Data2G's passband.
 bool notchCutsData2G(double hz, bool narrow);
 // The notch's change, or empty: "Notch on at 1500 Hz", "Notch 1500 →
 // 1200 Hz", "Notch off".
 std::string notchChangeText(const RigFilter& from, const RigFilter& to, const NotchModel& m);
-// The notch on, centred at hz (off with none), the rest as it is.
+// The notch on, centred at hz (off with none), the rest as it is: in Hz,
+// to the nearest 10, for a rig that gives its notch in Hz and no
+// position, else as a position.
 RigFilter withNotch(const RigFilter& now, std::optional<double> hz, const NotchModel& m);
 
 // A knob's shift in Hz, and back.

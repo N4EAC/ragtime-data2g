@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <utility>
 
 #include <wx/button.h>
@@ -62,14 +63,19 @@ wxString spanText(const Span& s)
 
 // The rig reads back what was written: the knobs come back in the rig's
 // own steps, which can be coarser than Hamlib's 1/255 (an IC-7100
-// reads 0.43 back as 0.44), so within four of those.
+// reads 0.43 back as 0.44), so within four of those; a notch in Hz
+// within a Yaesu's 10 Hz step.
 bool readsBack(const RigFilter& got, const RigFilter& want)
 {
     auto knob = [](const std::optional<double>& a, const std::optional<double>& b) {
         if (!b) return true;
         return a && std::fabs(*a - *b) <= 4.0 / 255.0;
     };
-    const bool notch = !want.notchOn || (got.notchOn == want.notchOn && (!*want.notchOn || knob(got.notchRaw, want.notchRaw)));
+    auto hz = [](const std::optional<int>& a, const std::optional<int>& b) {
+        return !b || (a && std::abs(*a - *b) <= 10);
+    };
+    const bool notch = !want.notchOn || (got.notchOn == want.notchOn &&
+                                         (!*want.notchOn || (knob(got.notchRaw, want.notchRaw) && hz(got.notchHz, want.notchHz))));
     return got.mode == want.mode && got.widthHz == want.widthHz && knob(got.pbtIn, want.pbtIn) &&
            knob(got.pbtOut, want.pbtOut) && notch;
 }
@@ -395,11 +401,12 @@ void EarFilterBar::showNotch(ear::EdgeFinder& edges)
     const ear::NotchModel& m = notchModel();
     const std::optional<RigFilter>& rig = rig_.filter;
     // The rig's notch as read: the noise's run is bridged over it, and its
-    // dip looked for around where the model puts it.
-    const bool on = rig && rig->notchOn && *rig->notchOn && rig->notchRaw;
+    // dip looked for around where the rig or the model puts it.
+    const std::optional<double> rigHz = rig && rig->notchOn && *rig->notchOn ? ear::notchCentre(*rig, m) : std::nullopt;
+    const bool on = rigHz.has_value();
     if (on)
     {
-        const double hz = m.hzOf(*rig->notchRaw);
+        const double hz = *rigHz;
         edges.setBridge(hz - DIP_SEARCH_HZ, hz + DIP_SEARCH_HZ);
         dipHz_.reset();
         if (auto d = edges.dip(hz - DIP_SEARCH_HZ, hz + DIP_SEARCH_HZ))
@@ -407,11 +414,12 @@ void EarFilterBar::showNotch(ear::EdgeFinder& edges)
             dipHz_ = d->hz;
             // Learned from once for each position, well inside the passband
             // (an edge or a cut in the audio drags a dip's floor sideways),
-            // and once the rig has what was written.
+            // and once the rig has what was written. A rig that gives its
+            // notch in Hz has nothing to learn.
             const std::optional<Span> pass = measured(edges);
             const bool inside = pass && d->hz > pass->lowHz + DIP_EDGE_HZ && d->hz < pass->highHz - DIP_EDGE_HZ;
             const bool settled = !edit_.pending() || readsBack(*rig, *edit_.pending());
-            if (inside && settled && (!learnedRaw_ || std::fabs(*learnedRaw_ - *rig->notchRaw) > 0.5 / 255.0))
+            if (rig->notchRaw && inside && settled && (!learnedRaw_ || std::fabs(*learnedRaw_ - *rig->notchRaw) > 0.5 / 255.0))
             {
                 learnedRaw_ = rig->notchRaw;
                 notchModel_.learn(*rig->notchRaw, d->hz);
@@ -434,9 +442,10 @@ void EarFilterBar::showNotch(ear::EdgeFinder& edges)
         return;
     }
     EarScope::Notch n;
-    n.on = *f->notchOn && f->notchRaw;
-    if (n.on) n.hz = notchModel_.hzOf(*f->notchRaw);
-    if (on && n.on && rig->notchRaw == f->notchRaw) n.dipHz = dipHz_;
+    const std::optional<double> at = *f->notchOn ? ear::notchCentre(*f, notchModel_) : std::nullopt;
+    n.on = at.has_value();
+    if (n.on) n.hz = *at;
+    if (on && n.on && rig->notchRaw == f->notchRaw && rig->notchHz == f->notchHz) n.dipHz = dipHz_;
     n.movable = adjustable() && !calibration_.running() && !restore_ && edit_.state() != FilterEdit::State::Waiting;
     scope_->setNotch(n);
 }
@@ -454,8 +463,9 @@ bool EarFilterBar::cutsData2G() const
     const std::optional<Span> s = wanted_ ? wanted_ : spanNow();
     if (s && ear::cutsData2G(*s, narrow_)) return true;
     const std::optional<RigFilter>& p = edit_.pending();
-    return p && p->notchOn && *p->notchOn && p->notchRaw &&
-           ear::notchCutsData2G(notchModel_.hzOf(*p->notchRaw), narrow_);
+    if (!p || !p->notchOn || !*p->notchOn) return false;
+    const std::optional<double> at = ear::notchCentre(*p, notchModel_);
+    return at && ear::notchCutsData2G(*at, narrow_);
 }
 
 void EarFilterBar::change(const RigFilter& to, const std::optional<Span>& wanted)
@@ -497,6 +507,7 @@ void EarFilterBar::recall(int n)
     if (p->pbtOut) to.pbtOut = p->pbtOut;
     if (p->notchOn) to.notchOn = p->notchOn;
     if (p->notchRaw) to.notchRaw = p->notchRaw;
+    if (p->notchHz) to.notchHz = p->notchHz;
     change(to, std::nullopt);
 }
 

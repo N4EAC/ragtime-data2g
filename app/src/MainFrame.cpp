@@ -4353,7 +4353,7 @@ void MainFrame::setRigFilter(const radio::RigFilter& f, const std::string& why)
     std::string said = "rig filter set " + f.mode + " " + std::to_string(f.widthHz) + " Hz";
     if (f.pbtIn) said += " PBT_IN " + radio::pbtText(*f.pbtIn);
     if (f.pbtOut) said += " PBT_OUT " + radio::pbtText(*f.pbtOut);
-    if (f.notchOn) said += " NF " + (*f.notchOn && f.notchRaw ? radio::pbtText(*f.notchRaw) : std::string("off"));
+    if (f.notchOn) said += " " + radio::notchText(f);
     host_->recorder().note(said + " (" + why + ")", HostConnection::nowMs());
     rig_->setFilter(f);
 }
@@ -4368,9 +4368,7 @@ void MainFrame::onDial()
         said = "rig filter " + filter->mode + " " + std::to_string(filter->widthHz) + " Hz";
         if (filter->pbtIn) said += " PBT_IN " + radio::pbtText(*filter->pbtIn);
         if (filter->pbtOut) said += " PBT_OUT " + radio::pbtText(*filter->pbtOut);
-        if (filter->notchOn)
-            said += " NF " + (*filter->notchOn && filter->notchRaw ? radio::pbtText(*filter->notchRaw)
-                                                                    : std::string("off"));
+        if (filter->notchOn) said += " " + radio::notchText(*filter);
         // While the Ear is open its filter bar hands on each new reading.
         // Here, with every dial update, the last reading would come again
         // after a write until the rig is read back, and look like the

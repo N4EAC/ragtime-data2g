@@ -221,29 +221,33 @@ std::string calibrationKey(const std::string& rig, const std::string& mode, int 
 
 std::optional<ragtime::radio::RigFilter> loadEarPreset(const std::string& rig, const std::string& mode, int n)
 {
-    // "2400 0.5020 0.4510 1 0.2510": the width, the PBT knobs, the notch
-    // on (1) or off (0) and where; a dash for what the rig hasn't, and a
-    // preset from before the notch has only the first three. Read and
-    // written in the C locale, whatever the desktop's.
+    // "2400 0.5020 0.4510 1 0.2510 -": the width, the PBT knobs, the
+    // notch on (1) or off (0) and where, as a position (NOTCHF_RAW) or in
+    // Hz (NOTCHF); a dash for what the rig hasn't. A preset from before
+    // the notch has only the first three, one from before the notch in Hz
+    // the first five. Read and written in the C locale, whatever the
+    // desktop's.
     std::istringstream in(loadString(presetKey(rig, mode, n).c_str(), ""));
     in.imbue(std::locale::classic());
     int width = 0;
-    std::string knobs[4];
+    std::string knobs[5];
     if (!(in >> width >> knobs[0] >> knobs[1]) || width <= 0) return std::nullopt;
-    in >> knobs[2] >> knobs[3];
+    in >> knobs[2] >> knobs[3] >> knobs[4];
     ragtime::radio::RigFilter f;
     f.mode = mode;
     f.widthHz = width;
     std::optional<double> notch;
     std::optional<double>* fields[3] = {&f.pbtIn, &f.pbtOut, &notch};
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 5; i++)
     {
         if (knobs[i].empty() || knobs[i] == "-") continue;
         std::istringstream k(knobs[i]);
         k.imbue(std::locale::classic());
         double v = 0;
         if (!(k >> v)) continue;
-        if (i == 3)
+        if (i == 4)
+            f.notchHz = (int)std::lround(v);
+        else if (i == 3)
             f.notchRaw = v;
         else
             *fields[i] = v;
@@ -268,6 +272,11 @@ void saveEarPreset(const std::string& rig, int n, const ragtime::radio::RigFilte
         else
             out << '-';
     }
+    out << ' ';
+    if (f.notchHz)
+        out << *f.notchHz;
+    else
+        out << '-';
     saveString(presetKey(rig, f.mode, n).c_str(), out.str());
     config().Flush();
 }
