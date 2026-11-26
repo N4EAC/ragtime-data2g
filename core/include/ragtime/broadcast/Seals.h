@@ -15,7 +15,8 @@
 // it lists.
 //
 // After a seal goes, a listening window (3 one-codeword bursts in its
-// mode, plus 4 s). The requests heard in it are joined and answered with
+// mode, plus 4 s; a seal with a Hand window, at least until that window
+// is over). The requests heard in it are joined and answered with
 // parity (docs/PROTOCOL.md, "Parity"): each request says what its asker
 // lacks and how many repair symbols it wants (more than it lacks, for what
 // it expects to lose), and one parity symbol fills a different gap for
@@ -139,8 +140,10 @@ public:
     static constexpr int SEAL_TRIES = 3;
     // A seal over a file goes again after a window that brought no
     // requests, this many more times, in case it or a request was lost
-    // (NORM's flush, repeated).
-    static constexpr int FLUSH_REPEATS = 2;
+    // (NORM's flush). Once (issue #185: twice keyed three seals for every
+    // file on an empty channel): a listener that loses both copies still
+    // asks, SEAL_LATE_MS on.
+    static constexpr int FLUSH_REPEATS = 1;
     // The sensitivity window.
     static constexpr size_t NEWEST_OPEN = 3;
     static constexpr double OPEN_AIRTIMES = 4.0;
@@ -652,14 +655,25 @@ private:
 
     // Repairs by Hand (docs/PROTOCOL.md, "Repairs by Hand"). Ours: the
     // seal whose burst carries a SealRound, and its window's channels,
-    // until the host ends the window.
+    // until the host ends the window. Once its burst has gone, the
+    // round's listening window stays open until then (handWindowOpen):
+    // the Hands are its requests, and they come at the window's end.
     struct HandRound
     {
         uint16_t seal = 0;
         int channels = 0;
         uint64_t burst = 0;
+        double delayS = 0.0;
+        uint64_t sentMs = 0;        // its burst went then; 0: not yet
     };
     std::optional<HandRound> handRound_;
+    // The Hand window's span after its burst: the delay, the Hand and the
+    // search after it. The host's HAND END comes a little later still,
+    // once the Hands are decoded.
+    static uint64_t handWindowMs(const HandRound& round);
+    // The host hasn't ended the window of our round's burst yet, as long
+    // as an end could still come (HAND_DECODE_MAX_S past its span).
+    bool handWindowOpen(uint64_t nowMs) const;
     size_t handsHeard_ = 0;
     // Theirs: the reference of the burst whose records come next, and our
     // repair Hand waiting to go, with what it asks for (counted as asked

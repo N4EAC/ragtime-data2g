@@ -843,8 +843,9 @@ the host's `MODES` lists them.
   share one refusal, and the same refusal goes at most once in 10
   minutes. A request with no window open opens one for it.
 - A window with no requests ends the repairs, except that a seal over a
-  file goes again after it, at most twice more, in case the seal or a
-  request was lost (NORM's flush, repeated).
+  file goes again after it, once, in case the seal or a request was lost
+  (NORM's flush). A listener that loses both copies still asks, 3
+  minutes on (below, "No seal at all" and "A round's seal lost").
 - A request that comes with no window open (a listener that pressed
   Receive late) opens one, so others can join it.
 - A request under seal 0 is answered with the seal over each file it
@@ -985,8 +986,14 @@ Hand, 10.56 s at -19 dB, in place of a RepairRequest burst.
   seal itself, two files, over the caps below) asks by burst.
 - **The sender** takes each Hand that unpacks and sits in its call's
   channel as a RepairRequest for every item of the seal, with the
-  number of symbols wanted, and repairs as for any request. The repair
-  round keeps its normal window.
+  number of symbols wanted, and repairs as for any request. The
+  listening window stays open until the Hand window is over (the host's
+  `HAND END`), whatever its normal length: in a mode whose window is
+  shorter (3 one-codeword bursts and 4 s against 3 s, 10.56 s and the
+  0.6 s search), the window would end before the Hands came, the seal
+  would go again into the host's hold and key as the Hands ended, and
+  the round would wait a window more, while each station that asked by
+  Hand, hearing the seal again, asked by burst as well (ragtime #185).
 
 **What a repair Hand says.** 63 bits, most significant first:
 
